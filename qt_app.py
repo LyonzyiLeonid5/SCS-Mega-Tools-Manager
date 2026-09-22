@@ -24,14 +24,14 @@ from PyQt5.QtGui import QIcon, QPixmap, QCursor, QSyntaxHighlighter, QTextCharFo
 from PyQt5.QtWidgets import (QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
     QHBoxLayout, QLabel as QtLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget, QSizePolicy, QTabWidget, QTabBar, QDialog, QToolButton,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView, QScrollArea, QFileDialog, QPlainTextEdit, QSplitter, QInputDialog, QMenu, QShortcut, QTextBrowser, QCheckBox)
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView, QAbstractScrollArea, QScrollArea, QFileDialog, QPlainTextEdit, QSplitter, QInputDialog, QMenu, QShortcut, QTextBrowser, QCheckBox)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
 import languages
 from app_logging import ActionLogger, configure_logging, logger as application_logger
 from settings_store import load_settings, save_settings
 from tool_manager import ToolRegistry, Tool, flatten
-from installation_manager import ensure_manager_shortcut, install_tool, is_installed, launcher_path, launcher_uid, read_launcher, register_file_association, restore_embedded_archive, uninstall_tool
+from installation_manager import ensure_manager_shortcut, install_tool, is_installed, launcher_path, launcher_uid, read_launcher, restore_embedded_archive, uninstall_tool
 if sys.platform == "win32":
     from win_embed import ExeHost
 else:
@@ -266,7 +266,7 @@ class HomePage(Page):
         verified = len(store.tools) if getattr(store, "verified_loaded", False) else "—"
         downloaded = len(self.app.registry.scan())
         catalog_state = self.app.lang["dashboard_catalog_ready"] if getattr(store, "verified_loaded", False) else self.app.lang["dashboard_catalog_unavailable"]
-        values = (str(verified), str(downloaded), "3", "v1.0.0")
+        values = (str(verified), str(downloaded), "3", "v1.0.0.1")
         labels = (self.app.lang["dashboard_verified"], self.app.lang["dashboard_downloaded_count"], self.app.lang["dashboard_runtimes"], self.app.lang["dashboard_version"])
         for (number, label), value, text in zip(self.stats, values, labels): number.setText(value); label.setText(text)
         self.subtitle.setText(f"{self.app.lang['dashboard_subtitle']} · {catalog_state}")
@@ -544,6 +544,9 @@ class StoreToolCard(QFrame):
         self.system_notice.setText(self.page.text("Недоступно на Вашей системе", "Unavailable on your system")); self.system_notice.setVisible(not available)
         self.download.setText(labels.get(state, labels['download']))
         self.download.setDisabled(state == 'downloading' or not available)
+        version = str(self.tool.get("version", "")).strip()
+        if version:
+            self.meta.setText(f"{self.page.app.lang['store_version']}: {version}  •  " + self.meta.text())
         local = self.page.local_tool(self.tool)
         self.delete.setText(self.page.text("Удалить", "Delete")); self.delete.setVisible(local is not None)
         self.description.updateGeometry(); self.updateGeometry()
@@ -566,6 +569,32 @@ def file_sha256(path):
     with open(path, 'rb') as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b''): digest.update(chunk)
     return digest.hexdigest()
+
+
+def download_archive_name(value):
+    """Return a safe local archive name from a catalog URL or file name."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    parsed = urlparse(value.strip())
+    path = parsed.path if parsed.scheme in {"http", "https"} and parsed.netloc else value.strip()
+    name = Path(unquote(path)).name
+    return name if name and Path(name).suffix.lower() == ".zip" else ""
+
+
+def catalog_tool_url(tool, filename):
+    """Resolve a catalog file name, preserving an explicitly supplied web URL."""
+    if not isinstance(filename, str):
+        return ""
+    value = filename.strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return value
+    if parsed.scheme or parsed.netloc or Path(value).name != value:
+        return ""
+    uid = str(tool.get('uid', '')).strip() if isinstance(tool, dict) else ""
+    return urljoin(STORE_CATALOG_URL, f"verified_tools/{uid}/{value}") if uid else ""
 
 
 class PublishToolDialog(QDialog):
@@ -616,9 +645,7 @@ class StorePage(Page):
         self.status.setText(messages.get(key, ''))
     def remote_url(self, value): return urljoin(STORE_CATALOG_URL, str(value)) if isinstance(value, str) and value.strip() else ""
     def tool_url(self, tool, filename):
-        uid = str(tool.get('uid', ''))
-        if not uid or not isinstance(filename, str) or not filename.strip() or '/' in filename.replace('://', ''): return ""
-        return urljoin(STORE_CATALOG_URL, f"verified_tools/{uid}/{filename}")
+        return catalog_tool_url(tool, filename)
     def clear_page_cache(self):
         active = self.tool_page
         for page in self.page_cache.values():
@@ -644,7 +671,7 @@ class StorePage(Page):
                 valid = []
                 for item in tools:
                     if not (isinstance(item, dict) and isinstance(item.get("uid"), str) and isinstance(item.get("name"), str) and isinstance(item.get("descriptions", {}).get("en"), str)): continue
-                    entry = dict(item); expected = str(entry.get('sha256', '')).lower(); expected_name = Path(str(entry.get('download_url', ''))).name; actual = installed_hashes.get(entry['uid'])
+                    entry = dict(item); expected = str(entry.get('sha256', '')).lower(); expected_name = download_archive_name(entry.get('download_url', '')); actual = installed_hashes.get(entry['uid'])
                     # A byte mismatch always wins: do not offer installation
                     # or opening until the verified archive has been updated.
                     entry['_store_state'] = 'update' if actual and actual[0] != expected else 'installed' if actual and actual[1] == expected_name and is_installed(entry['uid']) else 'open' if actual and actual[1] == expected_name else 'download'
@@ -675,7 +702,7 @@ class StorePage(Page):
     def action(self, tool):
         state = tool.get('_store_state')
         if state in ('open', 'installed'):
-            expected_name = Path(str(tool.get('download_url', ''))).name
+            expected_name = download_archive_name(tool.get('download_url', ''))
             local = next((item for item in self.app.registry.scan() if item.uid == tool.get('uid') and item.archive.name == expected_name), None)
             if local:
                 if state == 'installed' or sys.platform != 'win32': self.app.open_tool(local)
@@ -684,7 +711,7 @@ class StorePage(Page):
             tool['_store_state'] = 'update'; self.refresh_cards()
         self.download(tool)
     def local_tool(self, tool):
-        expected_name = Path(str(tool.get('download_url', ''))).name
+        expected_name = download_archive_name(tool.get('download_url', ''))
         return next((item for item in self.app.registry.scan() if item.uid == tool.get('uid') and item.archive.name == expected_name), None)
     def delete_tool(self, tool):
         local = self.local_tool(tool)
@@ -714,8 +741,8 @@ class StorePage(Page):
                 if not re.fullmatch(r"[0-9a-f]{64}", expected_hash): raise ValueError
                 digest = file_sha256(temporary)
                 if digest != expected_hash: raise ValueError
-                expected_name = Path(str(tool.get('download_url', ''))).name
-                if not expected_name or expected_name != str(tool.get('download_url', '')) or Path(expected_name).suffix.lower() != '.zip': raise ValueError
+                expected_name = download_archive_name(tool.get('download_url', ''))
+                if not expected_name: raise ValueError
                 target = self.app.registry.tools_dir / expected_name
                 occupied = next((item for item in self.app.registry.scan() if item.archive == target), None)
                 if occupied and occupied.uid != uid: raise ValueError
@@ -736,7 +763,7 @@ class StorePage(Page):
         self.active_downloads.discard(str(tool.get('uid', '')))
         if error:
             tool['_store_state'] = 'download'; self.set_status(error); self.refresh_cards(); return
-        name = str(tool.get('name', '')); tool['_store_state'] = 'installed' if is_installed(str(tool.get('uid', ''))) else 'open'; self.installed_hashes = self.installed_hashes or {}; self.installed_hashes[str(tool.get('uid', ''))] = (str(tool.get('sha256', '')).lower(), Path(str(tool.get('download_url', ''))).name); self.app.pages["library"].refresh(); self.set_status('download_complete', name=name)
+        name = str(tool.get('name', '')); tool['_store_state'] = 'installed' if is_installed(str(tool.get('uid', ''))) else 'open'; self.installed_hashes = self.installed_hashes or {}; self.installed_hashes[str(tool.get('uid', ''))] = (str(tool.get('sha256', '')).lower(), download_archive_name(tool.get('download_url', ''))); self.app.pages["library"].refresh(); self.set_status('download_complete', name=name)
         self.refresh_cards()
         if self.tool_page and str(self.tool_page.tool.get('uid', '')) == str(tool.get('uid', '')): self.tool_page.update_language()
         QMessageBox.information(self, self.app.lang["download_ready"], f"{name} {self.app.lang['download_success']}")
@@ -1277,7 +1304,7 @@ class EditorPreviewBridge(QObject):
 class ToolView(QWidget):
     logic_finished = pyqtSignal(str)
     def __init__(self, app, tool):
-        super().__init__(); self.setObjectName('runningToolView'); self.setContentsMargins(0, 0, 0, 0); self.app, self.tool, self.logic_running = app, tool, False; self.logic_finished.connect(self.render_logic_result); self.view_layout = QVBoxLayout(self); self.view_layout.setContentsMargins(0, 0, 0, 0); self.view_layout.setSpacing(0)
+        super().__init__(); self.setObjectName('runningToolView'); self.setContentsMargins(0, 0, 0, 0); self.app, self.tool, self.logic_running, self.pending_logic_result = app, tool, False, None; self.logic_finished.connect(self.render_logic_result); self.view_layout = QVBoxLayout(self); self.view_layout.setContentsMargins(0, 0, 0, 0); self.view_layout.setSpacing(0)
         info = QFrame(); info.setObjectName("toolInfoCard"); self.info_card = info; self.info_card.setProperty("roundedTopRight", True); row = QHBoxLayout(info); row.setContentsMargins(22, 18, 22, 18)
         icon = QLabel("◆"); icon.setObjectName("largeToolIcon"); path = app.registry.icon(tool)
         if path:
@@ -1290,31 +1317,13 @@ class ToolView(QWidget):
         app_card = QFrame(); app_card.setObjectName("applicationCard"); self.app_card = app_card; app_layout = QVBoxLayout(app_card); self.app_layout = app_layout; caption_row = QHBoxLayout(); self.caption = QLabel(app.lang["application"]); self.caption.setObjectName("eyebrow"); self.full_button = QPushButton(app.lang["full_screen"]); self.full_button.setObjectName("outlineButton"); self.full_button.clicked.connect(lambda: self.app.set_application_fullscreen(self, True)); caption_row.addWidget(self.caption); caption_row.addStretch(); caption_row.addWidget(self.full_button); app_layout.addLayout(caption_row)
         url = app.registry.html_url(tool)
         if url:
-            if sys.platform == "darwin":
-                # Recent macOS virtual machines can abort Qt 5 WebEngine when
-                # the first embedded page becomes visible.  Serve the extracted
-                # tool only on loopback instead: its HTML, assets and Python/JS
-                # action bridge stay local to this manager process.
-                try:
-                    self.browser_server = BrowserToolServer(app.registry, tool, app.lang['_lang_code'])
-                    self.external_tool_url = self.browser_server.url
-                except (OSError, ValueError):
-                    self.external_tool_url = url
-                self.mac_web_notice = QLabel(); self.mac_web_notice.setObjectName("emptyHint"); self.mac_web_notice.setWordWrap(True); self.mac_web_notice.setAlignment(Qt.AlignCenter)
-                self.mac_web_open = QPushButton(); self.mac_web_open.setObjectName("primaryButton"); self.mac_web_open.clicked.connect(self.open_external_tool)
-                mac_russian = app.lang['_lang_code'] == 'ru'
-                self.mac_web_notice.setText("На этой версии macOS HTML-инструмент открыт в системном браузере. Встроенный браузер Qt аварийно завершается в виртуальной машине." if mac_russian else "On this macOS version, the HTML tool is opened in the system browser. The embedded Qt browser crashes in this virtual machine.")
-                self.mac_web_open.setText("Открыть в браузере" if mac_russian else "Open in browser")
-                holder = QWidget(); holder_layout = QVBoxLayout(holder); holder_layout.addStretch(); holder_layout.addWidget(self.mac_web_notice); holder_layout.addWidget(self.mac_web_open, 0, Qt.AlignHCenter); holder_layout.addStretch(); app_layout.addWidget(holder, 1)
-                QTimer.singleShot(0, self.open_external_tool)
-            else:
-                self.web_url = url
-                self.web_placeholder = QLabel("Loading tool…"); self.web_placeholder.setObjectName("emptyHint"); self.web_placeholder.setAlignment(Qt.AlignCenter)
-                app_layout.addWidget(self.web_placeholder, 1)
-                # QWebEngine must be created after its parent page is put in
-                # the stacked interface. Creating it from the click handler
-                # while the page is still hidden can abort QtWebEngine on macOS.
-                QTimer.singleShot(0, self.create_web_view)
+            self.web_url = url
+            self.web_placeholder = QLabel("Loading tool…"); self.web_placeholder.setObjectName("emptyHint"); self.web_placeholder.setAlignment(Qt.AlignCenter)
+            app_layout.addWidget(self.web_placeholder, 1)
+            # QWebEngine is created only after its parent is part of the stacked
+            # interface. This is also required on macOS, where early creation
+            # while a page is hidden may abort Chromium's render process.
+            QTimer.singleShot(0, self.create_web_view)
         elif app.registry.exe_path(tool) and ExeHost is not None:
             self.exe_scroll = QScrollArea(); self.exe_scroll.setObjectName("exeScroll"); self.exe_scroll.setWidgetResizable(True); self.exe_scroll.setFrameShape(QFrame.NoFrame)
             # Родитель задаётся сразу, чтобы геометрия и clipping прокрутки были
@@ -1339,6 +1348,7 @@ class ToolView(QWidget):
         index = self.app_layout.indexOf(self.web_placeholder); self.app_layout.insertWidget(max(0, index), self.web, 1)
         self.web_placeholder.deleteLater(); del self.web_placeholder
         self.web.load(self.web_url)
+        self.set_runtime_active(self.is_current_tool_view())
     def set_info_top_right_rounded(self, rounded):
         """Стыкует верхний угол карточки с последней вкладкой инструмента."""
         if self.info_card.property("roundedTopRight") == rounded: return
@@ -1350,6 +1360,22 @@ class ToolView(QWidget):
         self.app_card.setProperty("fullscreen", enabled); self.app_card.style().unpolish(self.app_card); self.app_card.style().polish(self.app_card); self.app_card.update()
     def open_external_tool(self):
         if hasattr(self, "external_tool_url"): QDesktopServices.openUrl(self.external_tool_url)
+    def is_current_tool_view(self):
+        running = self.app.pages.get("running") if hasattr(self.app, "pages") else None
+        return bool(running and self.app.current_key == "running" and running.tool_pages.currentWidget() is self)
+    def set_runtime_active(self, active):
+        """Keep native tool surfaces from overlaying a different application tab."""
+        if hasattr(self, "web"):
+            self.web.setVisible(active)
+            if active and self.pending_logic_result is not None:
+                data, self.pending_logic_result = self.pending_logic_result, None
+                QTimer.singleShot(0, lambda: self.apply_logic_result(data))
+        if hasattr(self, "exe_host"):
+            self.exe_host.setVisible(active)
+            if active: QTimer.singleShot(0, lambda: self.exe_host.sync_overlay(force=True))
+    def apply_logic_result(self, data):
+        if hasattr(self, "web") and self.is_current_tool_view():
+            self.web.page().runJavaScript(f"if (window.renderTool) window.renderTool({data});")
     def run_logic(self, payload=""):
         if self.logic_running: return
         self.logic_running = True
@@ -1365,7 +1391,8 @@ class ToolView(QWidget):
         except (TypeError, ValueError): result = {}
         if result.get("status") == "security_violation":
             self.show_security_warning(); return
-        if hasattr(self, "web"): self.web.page().runJavaScript(f"if (window.renderTool) window.renderTool({data});")
+        if self.is_current_tool_view(): self.apply_logic_result(data)
+        else: self.pending_logic_result = data
     def show_security_warning(self):
         if hasattr(self, "security_warning"): return
         if hasattr(self, "web"): self.web.hide()
@@ -1476,11 +1503,25 @@ class RunningPage(Page):
             view = self.tool_pages.widget(index)
             if hasattr(view, "exe_host"): view.exe_host.stop()
             if hasattr(view, "browser_server"): view.browser_server.close()
-            if hasattr(view, "web"): view.web.setUrl(QUrl("about:blank"))
+            if hasattr(view, "web"):
+                # Chromium must receive a normal stop/navigation cycle before
+                # the QApplication is destroyed, particularly on macOS.
+                view.web.stop()
+                view.web.hide()
+                view.web.setUrl(QUrl("about:blank"))
     def activate_current(self, _index=None):
         self.tool_pages.setCurrentIndex(self.tab_bar.currentIndex()); QTimer.singleShot(0, self.ensure_current_tab_visible); QTimer.singleShot(0, self.update_info_corner)
         view = self.tool_pages.currentWidget()
+        running_is_visible = self.app.current_key == "running"
+        for index in range(self.tool_pages.count()):
+            candidate = self.tool_pages.widget(index)
+            if isinstance(candidate, ToolView): candidate.set_runtime_active(running_is_visible and candidate is view)
         if view and hasattr(view, "exe_host"): QTimer.singleShot(0, lambda: view.exe_host.sync_overlay(force=True))
+    def set_runtime_active(self, active):
+        current = self.tool_pages.currentWidget() if active else None
+        for index in range(self.tool_pages.count()):
+            view = self.tool_pages.widget(index)
+            if isinstance(view, ToolView): view.set_runtime_active(view is current)
     def update_text(self, lang):
         self.title.setText(lang["tab_running"]); self.subtitle.setText(lang["running_subtitle"])
         for index in range(self.tool_pages.count()): self.tool_pages.widget(index).update_language(lang)
@@ -1528,7 +1569,7 @@ class LibraryPage(Page):
         pages = getattr(self.app, 'pages', {})
         store = pages.get('store') if isinstance(pages, dict) else None
         if not getattr(store, 'verified_loaded', False): return set()
-        verified_tools = {str(item.get('uid')): (str(item.get('sha256')).lower(), Path(str(item.get('download_url', ''))).name) for item in getattr(store, 'tools', []) if isinstance(item, dict) and re.fullmatch(r'[0-9a-fA-F]{64}', str(item.get('sha256', '')))}
+        verified_tools = {str(item.get('uid')): (str(item.get('sha256')).lower(), download_archive_name(item.get('download_url', ''))) for item in getattr(store, 'tools', []) if isinstance(item, dict) and re.fullmatch(r'[0-9a-fA-F]{64}', str(item.get('sha256', '')))}
         originals = set()
         for uid, items in groups.items():
             if len(items) < 2: continue
@@ -1941,7 +1982,7 @@ class MainWindow(QMainWindow):
         for key, icon in (("dashboard", "⌂"), ("store", "▣"), ("library", "↓"), ("running", "▤"), ("create", "+"), ("settings", "⚙")):
             b = QPushButton(); b.setObjectName("navButton"); b.setCheckable(True); b.clicked.connect(lambda _, k=key: self.show_page(k)); sl.addWidget(b); self.buttons[key] = (b, icon)
             if key == "running": b.hide()
-        sl.addStretch(); version = QLabel("v1.0.0"); version.setObjectName("muted"); sl.addWidget(version); layout.addWidget(side)
+        sl.addStretch(); version = QLabel("v1.0.0.1"); version.setObjectName("muted"); sl.addWidget(version); layout.addWidget(side)
         self.content = content = QVBoxLayout(); self.header_box = QWidget(); header = QHBoxLayout(self.header_box); header.setContentsMargins(0, 0, 0, 0); self.exit_button = QPushButton(); self.exit_button.setObjectName("outlineButton"); self.exit_button.setFixedHeight(34); self.exit_button.clicked.connect(self.close); self.lang_button = QPushButton("RU / EN"); self.lang_button.setObjectName("outlineButton"); self.lang_button.setFixedHeight(34); self.lang_button.clicked.connect(lambda: self.change_language("en" if self.lang["_lang_code"] == "ru" else "ru")); header.addStretch(); header.addWidget(self.exit_button); header.addWidget(self.lang_button); content.addWidget(self.header_box)
         self.stack = QStackedWidget(); self.pages = {"dashboard": HomePage(self), "store": StorePage(self), "library": LibraryPage(self), "running": RunningPage(self), "create": CreatePage(self), "settings": SettingsPage(self)}
         for p in self.pages.values(): self.stack.addWidget(p)
@@ -2019,13 +2060,34 @@ class MainWindow(QMainWindow):
         effect = getattr(self, "full_toolbar_effect", None)
         if effect and effect.opacity() <= .01:
             self.full_toolbar.hide(); self.full_toolbar.setMaximumHeight(0); self.full_toolbar.setGraphicsEffect(None); self.full_toolbar_effect = None; self.full_toolbar_hiding = False
+    def scroll_area_under_cursor(self, event, watched):
+        """Return the innermost scroll area physically below the mouse cursor."""
+        point = QCursor.pos()
+        cursor_widget = QApplication.widgetAt(point)
+        seen = set()
+        for origin in (cursor_widget, watched):
+            widget = origin
+            while widget is not None:
+                # Editors, trees and text browsers already implement their own
+                # wheel handling.  Do not consume their event for the page
+                # scroll area behind them.
+                if isinstance(widget, QAbstractScrollArea) and not isinstance(widget, QScrollArea):
+                    viewport = widget.viewport()
+                    if viewport.rect().contains(viewport.mapFromGlobal(point)):
+                        return None
+                if isinstance(widget, QScrollArea) and id(widget) not in seen:
+                    seen.add(id(widget))
+                    viewport = widget.viewport()
+                    inside = viewport.rect().contains(viewport.mapFromGlobal(point))
+                    bar = widget.verticalScrollBar()
+                    if inside and bar.maximum() > bar.minimum():
+                        return widget
+                widget = widget.parentWidget() if hasattr(widget, "parentWidget") else None
+        return None
+
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Wheel and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
-            area, parent = None, watched
-            while parent is not None:
-                if isinstance(parent, QScrollArea):
-                    area = parent; break
-                parent = parent.parentWidget() if hasattr(parent, "parentWidget") else None
+            area = self.scroll_area_under_cursor(event, watched)
             if area is not None:
                 bar = area.verticalScrollBar()
                 if bar.maximum() > bar.minimum():
@@ -2061,7 +2123,7 @@ class MainWindow(QMainWindow):
         verified = next((item for item in store.tools if str(item.get("uid", "")) == tool.uid), None)
         if not isinstance(verified, dict): return False
         expected_hash = str(verified.get("sha256", "")).lower()
-        expected_name = Path(str(verified.get("download_url", ""))).name
+        expected_name = download_archive_name(verified.get("download_url", ""))
         if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or tool.archive.name != expected_name: return False
         try: return file_sha256(tool.archive).lower() == expected_hash
         except OSError: return False
@@ -2168,9 +2230,10 @@ class MainWindow(QMainWindow):
                 entries = payload.get('verified_tools') if isinstance(payload, dict) else None
                 entry = self.verified_launcher_entry(uid, entries)
                 if not entry: raise LookupError
-                expected_hash = str(entry.get('sha256', '')).lower(); archive_name = Path(str(entry.get('download_url', ''))).name
-                if not re.fullmatch(r'[0-9a-f]{64}', expected_hash) or not archive_name or archive_name != str(entry.get('download_url', '')) or archive_name.lower().endswith('.zip') is False: raise ValueError
-                url = urljoin(STORE_CATALOG_URL, f"verified_tools/{entry['uid']}/{archive_name}")
+                expected_hash = str(entry.get('sha256', '')).lower(); archive_name = download_archive_name(entry.get('download_url', ''))
+                if not re.fullmatch(r'[0-9a-f]{64}', expected_hash) or not archive_name: raise ValueError
+                url = catalog_tool_url(entry, entry.get('download_url', ''))
+                if not url: raise ValueError
                 handle, temporary = tempfile.mkstemp(prefix='scs_launcher_', suffix='.zip', dir=str(self.registry.tools_dir)); os.close(handle)
                 with open_remote(Request(url, headers={'User-Agent': 'SCS-Mega-Manager/1.0'}), timeout=30) as response, open(temporary, 'wb') as output:
                     shutil.copyfileobj(response, output)
@@ -2214,10 +2277,26 @@ class MainWindow(QMainWindow):
         self.resolve_missing_launcher(data)
     def close_tool(self, view): self.pages["running"].close_tool(view)
     def closeEvent(self, event):
-        self.pages["running"].stop_all()
+        # Do not tear down QtWebEngine and its Chromium helper processes in the
+        # same event that closes the native window.  macOS can report that as
+        # an unexpected termination even when the user pressed Exit normally.
+        if not getattr(self, "_shutdown_ready", False):
+            if not getattr(self, "_shutdown_started", False):
+                self._shutdown_started = True
+                self.pages["running"].stop_all()
+                QTimer.singleShot(180, self.finish_shutdown)
+            event.ignore()
+            return
         self.registry.cleanup_all()
-        super().closeEvent(event)
+        event.accept()
+    def finish_shutdown(self):
+        self._shutdown_ready = True
+        self.close()
     def show_page(self, key):
+        if key not in self.pages: return
+        previous_key = getattr(self, "current_key", None)
+        if previous_key == "running" and key != "running":
+            self.pages["running"].set_runtime_active(False)
         previous_page = self.stack.currentWidget()
         if previous_page is not self.pages[key]: previous_page.setGraphicsEffect(None)
         self.current_key = key; self.settings['last_page'] = key; save_settings(self.settings); self.stack.setCurrentWidget(self.pages[key])
@@ -2243,9 +2322,12 @@ def run(launcher_file=None):
     try:
         ctypes.windll.winmm.timeBeginPeriod(1); timer_resolution_requested = True
     except Exception: pass
-    try: register_file_association(); ensure_manager_shortcut()
+    try: ensure_manager_shortcut()
     except OSError: pass
-    app = QApplication(sys.argv); app.setApplicationName("SCS Tools Manager"); app.setWindowIcon(QIcon(resource_path("assets", "icon.ico"))); app.installEventFilter(ActionLogger(app)); application_logger().info("Application started")
+    app = QApplication(sys.argv); app.setApplicationName("SCS Tools Manager")
+    if sys.platform.startswith("linux") and hasattr(app, "setDesktopFileName"):
+        app.setDesktopFileName("scs-tools-manager")
+    app.setWindowIcon(QIcon(resource_path("assets", "icon.ico"))); app.installEventFilter(ActionLogger(app)); application_logger().info("Application started")
     app.setStyleSheet(STYLE); window = MainWindow(); window.show()
     if launcher_file: QTimer.singleShot(0, lambda: window.open_launcher_file(launcher_file))
     try: return app.exec_()

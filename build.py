@@ -31,7 +31,7 @@ EXE_NAME = "SCS_Tools_Manager.exe"
 SETUP_NAME = "SCS_Tools_Manager_Setup.exe"
 MSI_NAME = "SCS_Tools_Manager.msi"
 PROG_ID = "SCS.Tools.Manager.scstool"
-VERSION = os.environ.get("SCS_TOOLS_VERSION", "1.0.0")
+VERSION = os.environ.get("SCS_TOOLS_VERSION", "1.0.0.1")
 UPGRADE_CODE = "{E8B8E57B-8E9F-4A9B-9238-6B41BCA30E78}"
 NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-x64.msi"
 WIX_URL = "https://github.com/wixtoolset/wix/releases/download/v7.0.0/wix-cli-x64.msi"
@@ -463,7 +463,7 @@ def build_linux(project: Path, pyinstaller) -> tuple[Path, Path]:
     launcher.write_text(f"#!/bin/sh\nexec /usr/lib/{package_name}/{native_binary_name()} \"$@\"\n", encoding="utf-8"); launcher.chmod(0o755)
     desktop = deb_root / "usr" / "share" / "applications" / f"{package_name}.desktop"; desktop.parent.mkdir(parents=True)
     icon_target = deb_root / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps" / f"{package_name}.png"; icon_target.parent.mkdir(parents=True); shutil.copy2(icon, icon_target)
-    desktop.write_text(f"[Desktop Entry]\nType=Application\nName={APP_NAME}\nComment=Manage tools for SCS games\nExec=/usr/bin/{package_name}\nIcon={package_name}\nTerminal=false\nCategories=Utility;Development;\n", encoding="utf-8")
+    desktop.write_text(f"[Desktop Entry]\nType=Application\nName={APP_NAME}\nComment=Manage tools for SCS games\nExec=/usr/bin/{package_name}\nIcon={package_name}\nStartupWMClass=SCS_Tools_Manager\nTerminal=false\nCategories=Utility;Development;\n", encoding="utf-8")
     (deb_root / "DEBIAN" / "control").write_text(f"Package: {package_name}\nVersion: {VERSION}\nSection: utils\nPriority: optional\nArchitecture: {deb_arch}\nMaintainer: SCS Tools Manager\nDepends: libgl1, libegl1, libnss3, libxkbcommon0\nDescription: SCS Tools Manager\n", encoding="utf-8")
     deb = dist / f"{package_name}_{VERSION}_{deb_arch}.deb"; subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(deb_root), str(deb)], check=True)
     top = staging / "rpmbuild"; (top / "SPECS").mkdir(parents=True); (top / "BUILDROOT").mkdir(parents=True)
@@ -474,7 +474,7 @@ def build_linux(project: Path, pyinstaller) -> tuple[Path, Path]:
     # PyQt's prebuilt WebEngine libraries deliberately carry upstream RPATHs.
     # They remain functional inside the package, but Fedora/RPM's QA checker
     # rejects those third-party binaries unless this check is disabled here.
-    spec_file.write_text(f"%global __brp_check_rpaths %{{nil}}\n%global _build_id_links none\nName: {package_name}\nVersion: {VERSION}\nRelease: 1%{{?dist}}\nSummary: SCS Tools Manager\nLicense: GPL-2.0-only\nBuildArch: {rpm_arch}\nRequires: mesa-libGL, nss, libxkbcommon\n%description\nSCS Tools Manager\n%install\nmkdir -p \"%{{buildroot}}/usr/lib/{package_name}\" \"%{{buildroot}}/usr/bin\" \"%{{buildroot}}/usr/share/applications\" \"%{{buildroot}}/usr/share/icons/hicolor/256x256/apps\"\ncp -a \"{rpm_payload}/.\" \"%{{buildroot}}/usr/lib/{package_name}/\"\ncp \"{rpm_icon}\" \"%{{buildroot}}/usr/share/icons/hicolor/256x256/apps/{package_name}.png\"\nprintf '#!/bin/sh\\nexec /usr/lib/{package_name}/{native_binary_name()} \"$@\"\\n' > \"%{{buildroot}}/usr/bin/{package_name}\"\nprintf '[Desktop Entry]\\nType=Application\\nName={APP_NAME}\\nComment=Manage tools for SCS games\\nExec=/usr/bin/{package_name}\\nIcon={package_name}\\nTerminal=false\\nCategories=Utility;Development;\\n' > \"%{{buildroot}}/usr/share/applications/{package_name}.desktop\"\nchmod 0755 \"%{{buildroot}}/usr/bin/{package_name}\"\n%files\n/usr/lib/{package_name}\n/usr/bin/{package_name}\n/usr/share/applications/{package_name}.desktop\n/usr/share/icons/hicolor/256x256/apps/{package_name}.png\n", encoding="utf-8")
+    spec_file.write_text(f"%global __brp_check_rpaths %{{nil}}\n%global _build_id_links none\nName: {package_name}\nVersion: {VERSION}\nRelease: 1%{{?dist}}\nSummary: SCS Tools Manager\nLicense: GPL-2.0-only\nBuildArch: {rpm_arch}\nRequires: mesa-libGL, nss, libxkbcommon\n%description\nSCS Tools Manager\n%install\nmkdir -p \"%{{buildroot}}/usr/lib/{package_name}\" \"%{{buildroot}}/usr/bin\" \"%{{buildroot}}/usr/share/applications\" \"%{{buildroot}}/usr/share/icons/hicolor/256x256/apps\"\ncp -a \"{rpm_payload}/.\" \"%{{buildroot}}/usr/lib/{package_name}/\"\ncp \"{rpm_icon}\" \"%{{buildroot}}/usr/share/icons/hicolor/256x256/apps/{package_name}.png\"\nprintf '#!/bin/sh\\nexec /usr/lib/{package_name}/{native_binary_name()} \"$@\"\\n' > \"%{{buildroot}}/usr/bin/{package_name}\"\nprintf '[Desktop Entry]\\nType=Application\\nName={APP_NAME}\\nComment=Manage tools for SCS games\\nExec=/usr/bin/{package_name}\\nIcon={package_name}\\nStartupWMClass=SCS_Tools_Manager\\nTerminal=false\\nCategories=Utility;Development;\\n' > \"%{{buildroot}}/usr/share/applications/{package_name}.desktop\"\nchmod 0755 \"%{{buildroot}}/usr/bin/{package_name}\"\n%files\n/usr/lib/{package_name}\n/usr/bin/{package_name}\n/usr/share/applications/{package_name}.desktop\n/usr/share/icons/hicolor/256x256/apps/{package_name}.png\n", encoding="utf-8")
     # rpmbuild only constructs a package tree; it does not need an RPM database.
     # Supplying one makes some RPM distributions try to lock a protected database.
     subprocess.run(["rpmbuild", "-bb", str(spec_file), "--define", f"_topdir {top}"], check=True)

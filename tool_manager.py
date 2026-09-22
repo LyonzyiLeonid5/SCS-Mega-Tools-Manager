@@ -151,7 +151,13 @@ class ToolRegistry:
             if isinstance(flags, int): writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC))
             else: writing = flags is None or any(flag in str(flags) for flag in ("w", "a", "x", "+"))
             forbidden = target is None or any(target == base or base in target.parents for base in blocked_roots)
-            if writing and forbidden: raise PermissionError("Tool write blocked in a protected system directory")
+            # Tool resources intentionally live in Local AppData, which is
+            # otherwise a protected location.  Permit only this tool's
+            # manager-created directory; this keeps the sandbox in force for
+            # every other AppData path while allowing persistent tool state
+            # such as Combo Installer's verification_log.json.
+            resource_write = target is not None and (target == resource_root or resource_root in target.parents)
+            if writing and forbidden and not resource_write: raise PermissionError("Tool write blocked in a protected system directory")
         def safe_open(file, mode="r", *args, **kwargs): check_write(file, mode); return old_open(file, mode, *args, **kwargs)
         def safe_io_open(file, mode="r", *args, **kwargs): check_write(file, mode); return old_io_open(file, mode, *args, **kwargs)
         def safe_os_open(file, flags, *args, **kwargs): check_write(file, flags); return old_os_open(file, flags, *args, **kwargs)

@@ -125,7 +125,7 @@ def _tool_icon_path(tool: Tool) -> Path:
 
 
 def register_file_association() -> None:
-    """Register a per-user association; no administrator rights are required."""
+    """Register a per-user association when a tool itself is installed."""
     if os.name != "nt": return
     import winreg
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.scstool") as key: winreg.SetValueEx(key, "", 0, winreg.REG_SZ, PROG_ID)
