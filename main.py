@@ -14,6 +14,20 @@ if "--disk-cache-dir=" not in flags:
     extra_flags.append(f'--disk-cache-dir="{cache_dir}"')
 if "--disable-gpu-shader-disk-cache" not in flags:
     extra_flags.append("--disable-gpu-shader-disk-cache")
+# A QWebEngineView embedded in a stacked Qt interface can incorrectly be
+# treated by Chromium as an occluded/background window. Chromium then limits
+# its compositor and requestAnimationFrame to a very low rate even though the
+# tool is visibly active. Keep the active tool renderer at foreground pace.
+if "--disable-backgrounding-occluded-windows" not in flags:
+    extra_flags.append("--disable-backgrounding-occluded-windows")
+if "--disable-renderer-backgrounding" not in flags:
+    extra_flags.append("--disable-renderer-backgrounding")
+if "--disable-background-timer-throttling" not in flags:
+    extra_flags.append("--disable-background-timer-throttling")
+# Avoid noisy glCopySubTexture failures from Chromium's GPU raster stage while
+# retaining GPU compositing for a responsive embedded-tool interface.
+if sys.platform.startswith("win") and "--disable-gpu-rasterization" not in flags:
+    extra_flags.append("--disable-gpu-rasterization")
 if sys.platform == "darwin":
     if "--disable-gpu" not in flags:
         extra_flags.append("--disable-gpu")

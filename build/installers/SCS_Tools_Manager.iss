@@ -1,7 +1,7 @@
 [Setup]
 AppId={{D47C4FCD-D4C1-4BA4-845B-E5417AB2CA29}}
 AppName=SCS Tools Manager
-AppVersion=1.0.0
+AppVersion=1.1.0
 AppPublisher=SCS Tools Manager
 DefaultDirName={autopf}\SCS Tools Manager
 DefaultGroupName=SCS Tools Manager

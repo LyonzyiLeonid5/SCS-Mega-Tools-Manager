@@ -85,6 +85,13 @@ def is_installed(uid: str) -> bool:
     except ValueError: return False
 
 
+def installation_details(uid: str) -> dict:
+    """Return a copy of the manager-owned launcher/shortcut record."""
+    try: record = _load_records().get(launcher_uid(uid), {})
+    except ValueError: return {}
+    return dict(record) if isinstance(record, dict) else {}
+
+
 def uninstall_tool(uid: str) -> None:
     """Remove only manager-created launchers and shortcuts for one tool."""
     try: key = launcher_uid(uid)
@@ -163,9 +170,9 @@ def _create_shortcut(shortcut_path: Path, target: Path, icon: Path) -> None:
     except (OSError, subprocess.SubprocessError) as error: raise OSError("Unable to create Windows shortcut") from error
 
 
-def install_tool(tool: Tool, *, one_file: bool, start_menu: bool, desktop: bool) -> dict:
+def install_tool(tool: Tool, *, one_file: bool, start_menu: bool, desktop: bool, launcher_directory: Path | str | None = None, desktop_directory: Path | str | None = None) -> dict:
     tool_key = launcher_uid(tool.uid)
-    destination = launcher_path(tool)
+    destination = (Path(launcher_directory) / launcher_path(tool).name) if launcher_directory else launcher_path(tool)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = {"format": LAUNCHER_FORMAT, "uid": tool_key}
     if one_file:
@@ -178,9 +185,25 @@ def install_tool(tool: Tool, *, one_file: bool, start_menu: bool, desktop: bool)
         start_root = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "SCS Tools"
         path = start_root / f"{_safe_name(tool.name)}.lnk"; _create_shortcut(path, destination, icon); shortcuts.append(str(path))
     if desktop:
-        path = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop" / f"{_safe_name(tool.name)}.lnk"; _create_shortcut(path, destination, icon); shortcuts.append(str(path))
-    records = _load_records(); records[tool_key] = {"launcher": str(destination), "one_file": bool(one_file), "shortcuts": shortcuts}; _save_records(records)
+        desktop_root = Path(desktop_directory) if desktop_directory else Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
+        path = desktop_root / f"{_safe_name(tool.name)}.lnk"; _create_shortcut(path, destination, icon); shortcuts.append(str(path))
+    records = _load_records(); previous = records.get(tool_key)
+    if isinstance(previous, dict):
+        for old in [previous.get('launcher'), *(previous.get('shortcuts') or [])]:
+            try:
+                old_path = Path(str(old))
+                if old_path != destination and str(old_path) not in shortcuts and old_path.is_file(): old_path.unlink()
+            except OSError: pass
+    records[tool_key] = {"launcher": str(destination), "one_file": bool(one_file), "shortcuts": shortcuts, "start_menu": bool(start_menu), "desktop": bool(desktop), "desktop_directory": str(desktop_directory or '')}; _save_records(records)
     return {"launcher": destination, "shortcuts": shortcuts}
+
+
+def update_installed_tool(tool: Tool) -> dict | None:
+    """Refresh an installed launch file after its ZIP has been updated."""
+    record = installation_details(tool.uid)
+    if not record: return None
+    launcher = Path(str(record.get('launcher', '')))
+    return install_tool(tool, one_file=bool(record.get('one_file')), start_menu=bool(record.get('start_menu')), desktop=bool(record.get('desktop')), launcher_directory=launcher.parent if launcher.parent else None, desktop_directory=record.get('desktop_directory') or None)
 
 
 def restore_embedded_archive(data: dict, registry: ToolRegistry) -> str:

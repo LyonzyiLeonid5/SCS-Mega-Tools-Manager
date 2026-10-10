@@ -42,16 +42,20 @@ gdi32.DeleteObject.restype = wintypes.BOOL
 
 
 class ExeHost(QFrame):
-    def __init__(self, exe_path: Path, lang, parent=None):
+    def __init__(self, exe_path: Path, lang, parent=None, theme="dark"):
         super().__init__(parent); self.exe_path = exe_path; self.lang = lang; self.process = None; self.child_hwnd = None; self.attempts = 0; self.last_state = None; self.overlay_visible = False
         # Сам контейнер остаётся обычным Qt-виджетом. EXE показывается отдельным
         # overlay-окном, поэтому HWND контейнера здесь не нужен и только нарушал
         # clipping внутри QScrollArea.
-        self.setObjectName("exeHost"); self.setStyleSheet("QFrame#exeHost { background:#101216; border:0; }")
+        self.setObjectName("exeHost"); self.set_theme(theme)
         layout = QVBoxLayout(self); self.status_key = "exe_starting"; self.status = QLabel(self.lang[self.status_key]); self.status.setObjectName("emptyHint"); layout.addWidget(self.status)
         self.attach_timer = QTimer(self); self.attach_timer.timeout.connect(self.find_and_prepare)
         self.overlay_timer = QTimer(self); self.overlay_timer.timeout.connect(self.sync_overlay)
         self.start()
+
+    def set_theme(self, theme):
+        background = "#f6f8fb" if theme == "light" else "#17110f" if theme == "ember" else "#0c1724" if theme == "ocean" else "#f8f5fd" if theme == "lavender" else "#1b0f0d" if theme == "fire" else "#12101f" if theme == "spectrum_dark" else "#f8f7ff" if theme == "spectrum_light" else "#101216"
+        self.setStyleSheet(f"QFrame#exeHost {{ background:{background}; border:0; }}")
 
     def start(self):
         try:

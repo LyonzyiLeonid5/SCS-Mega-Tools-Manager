@@ -7,6 +7,7 @@ import sys
 import threading
 import traceback
 import warnings
+from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QObject, qInstallMessageHandler, QtDebugMsg, QtInfoMsg, QtWarningMsg, QtCriticalMsg, QtFatalMsg
 from PyQt5.QtCore import Qt
@@ -18,6 +19,102 @@ from tool_manager import app_data_path
 LOGGER_NAME = "scs_tools_manager"
 LOG_LIMIT_BYTES = 32 * 1024 * 1024
 LOG_RETAIN_BYTES = 28 * 1024 * 1024
+_detailed_tracing = False
+_log_language = "en"
+
+
+def _short_repr(value, limit=420):
+    try: result = repr(value)
+    except Exception: result = f'<{type(value).__name__}>'
+    return result if len(result) <= limit else result[:limit] + '…'
+
+
+def configure_detailed_tracing(enabled: bool) -> None:
+    """Enable verbose *explicit* events without profiling the GUI thread.
+
+    Python's sys.setprofile callback executes for every call and return.  In a
+    QtWebEngine application that can reduce rendering to a few FPS, even if
+    records are queued.  Important UI, bridge, backend and error events are
+    already instrumented, so detailed mode changes their level without a
+    per-function interpreter hook.
+    """
+    global _detailed_tracing
+    enabled = bool(enabled)
+    if enabled == _detailed_tracing: return
+    _detailed_tracing = enabled
+    logger().info('Detailed function tracing %s', 'enabled' if enabled else 'disabled')
+
+
+def detailed_event(kind: str, name: str, value=None) -> None:
+    """Record a deliberately instrumented operation in detailed mode."""
+    if not _detailed_tracing: return
+    suffix = '' if value is None else ' -> ' + _short_repr(value)
+    logger().debug('%s %s%s', str(kind).upper(), name, suffix)
+
+
+def set_log_language(code: str) -> None:
+    global _log_language
+    _log_language = 'ru' if str(code).lower().startswith('ru') else 'en'
+
+
+class CurrentLanguageFilter(logging.Filter):
+    """Translate standard manager log vocabulary at write time."""
+    RU_REPLACEMENTS = (
+        ('Logging started', 'Логирование запущено'),
+        ('Application started', 'Приложение запущено'),
+        ('Detailed function tracing enabled', 'Подробное логирование включено'),
+        ('Detailed function tracing disabled', 'Подробное логирование выключено'),
+        ('Unhandled thread exception', 'Необработанная ошибка потока'),
+        ('Unhandled exception', 'Необработанная ошибка'),
+        ('Python warning', 'Предупреждение Python'),
+        ('Unable to install Qt message handler', 'Не удалось установить обработчик сообщений Qt'),
+        ('Message box warning:', 'Окно предупреждения:'),
+        ('Message box critical:', 'Окно критической ошибки:'),
+        ('Message box information:', 'Информационное окно:'),
+        ('Message box question:', 'Окно вопроса:'),
+        ('UI click:', 'Клик интерфейса:'),
+        ('UI key:', 'Клавиша интерфейса:'),
+        ('Backend scan started:', 'Начато сканирование инструментов:'),
+        ('Backend scan found tool:', 'Найден инструмент:'),
+        ('Backend registry ready:', 'Реестр инструментов готов:'),
+        ('Backend scan completed:', 'Сканирование инструментов завершено:'),
+        ('Backend scan skipped archive with invalid UID:', 'Архив пропущен из-за неверного UID:'),
+        ('Backend scan skipped unreadable archive', 'Пропущен нечитаемый архив'),
+        ('Backend cleaning tool cache:', 'Очистка кэша инструмента:'),
+        ('Backend logic completed:', 'Логика инструмента завершена:'),
+        ('Backend logic start:', 'Запущена логика инструмента:'),
+        ('Backend logic failed:', 'Ошибка логики инструмента:'),
+        ('Backend logic blocked:', 'Логика инструмента заблокирована:'),
+        ('Backend logic input:', 'Входные данные логики инструмента:'),
+        ('Backend logic output:', 'Результат логики инструмента:'),
+        ('Backend logic file missing:', 'Не найден файл логики инструмента:'),
+        ('Backend logic child output:', 'Вывод дочернего процесса инструмента:'),
+        ('Backend extracting tool:', 'Распаковка инструмента:'),
+        ('Backend using cached tool extraction:', 'Используется кэш распаковки инструмента:'),
+        ('Backend external runtime start:', 'Запуск внешней среды инструмента:'),
+        ('Backend external runtime completed:', 'Внешняя среда инструмента завершена:'),
+        ('Backend external runtime failed:', 'Ошибка внешней среды инструмента:'),
+        ('Backend EXE launch failed, entry missing:', 'Не удалось запустить EXE: файл не найден:'),
+        ('Backend EXE launched:', 'EXE инструмента запущен:'),
+        ('Store download started:', 'Загрузка из Магазина начата:'),
+        ('Store download verified:', 'Загрузка из Магазина проверена:'),
+        ('Store download cancelled:', 'Загрузка из Магазина отменена:'),
+        ('Store download failed:', 'Ошибка загрузки из Магазина:'),
+        ('Unable to refresh installed launcher for', 'Не удалось обновить установленный файл запуска для'),
+        ('Unreadable Python tool log:', 'Не удалось прочитать Python-лог инструмента:'),
+        ('Tool JS log payload unreadable:', 'Не удалось прочитать JavaScript-лог инструмента:'),
+        ('Tool Python', 'Python инструмента'),
+        ('Tool JS', 'JavaScript инструмента'),
+        ('CALL ', 'ВЫЗОВ '), ('RETURN ', 'РЕЗУЛЬТАТ '), ('EXCEPTION ', 'ИСКЛЮЧЕНИЕ '),
+        ('Qt:', 'Qt:'),
+    )
+    def filter(self, record):
+        if _log_language != 'ru': return True
+        message = record.getMessage()
+        for source, target in self.RU_REPLACEMENTS:
+            if source in message: message = message.replace(source, target)
+        record.msg = message; record.args = ()
+        return True
 
 
 class LineTruncatingFileHandler(logging.FileHandler):
@@ -61,6 +158,7 @@ def configure_logging() -> logging.Logger:
     directory = app_data_path() / "logs"; directory.mkdir(parents=True, exist_ok=True)
     handler = LineTruncatingFileHandler(directory / "application.log", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
+    handler.addFilter(CurrentLanguageFilter())
     log.addHandler(handler)
 
     def exception_hook(kind, value, trace):

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
-  <Package Name="SCS Tools Manager" Manufacturer="SCS Tools Manager" Version="1.0.0" UpgradeCode="{E8B8E57B-8E9F-4A9B-9238-6B41BCA30E78}" Scope="perMachine">
+  <Package Name="SCS Tools Manager" Manufacturer="SCS Tools Manager" Version="1.1.0" UpgradeCode="{E8B8E57B-8E9F-4A9B-9238-6B41BCA30E78}" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer version of SCS Tools Manager is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="ProductIcon" SourceFile="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\assets\icon.ico" />
@@ -78,9 +78,6 @@
           <Directory Id="Dir5a70f3b0e058094f7f66" Name="assets">
             <Component Id="Cmpec705f973e45e90465a5" Guid="*">
               <File Id="Fileec705f973e45e90465a5" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\assets\icon.ico" KeyPath="yes" />
-            </Component>
-            <Component Id="Cmp0a52f518dc8f7a85068d" Guid="*">
-              <File Id="File0a52f518dc8f7a85068d" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\assets\Screenshot 2026-09-16 195358.png" KeyPath="yes" />
             </Component>
           </Directory>
           <Directory Id="Dirb47cd227833ce62d1748" Name="certifi">
@@ -4993,7 +4990,6 @@
       <ComponentRef Id="Cmpc4b7fc5a6691f3802f5d" />
       <ComponentRef Id="Cmp1e8d21d5d6c4a203c4ac" />
       <ComponentRef Id="Cmpec705f973e45e90465a5" />
-      <ComponentRef Id="Cmp0a52f518dc8f7a85068d" />
       <ComponentRef Id="Cmp85c410403d43fdb4d47c" />
       <ComponentRef Id="Cmp92597fca33e1f7f00662" />
       <ComponentRef Id="Cmp0e9c662464a724876662" />

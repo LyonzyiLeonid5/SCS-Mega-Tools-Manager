@@ -23,6 +23,25 @@ from PyQt5.QtCore import QUrl
 
 
 backend_log = logging.getLogger("scs_tools_manager")
+TOOL_LOG_PREFIX = "__MANAGER_TOOL_LOG__:"
+
+
+def split_tool_output(output: str, tool: "Tool") -> str:
+    """Forward Python bridge records while leaving the JSON response untouched."""
+    response_lines = []
+    for line in output.splitlines(keepends=True):
+        if not line.startswith(TOOL_LOG_PREFIX):
+            response_lines.append(line)
+            continue
+        try:
+            entry = json.loads(line[len(TOOL_LOG_PREFIX):])
+            level = str(entry.get("level", "INFO")).upper()
+            level = getattr(logging, level, logging.INFO)
+            if not isinstance(level, int): level = logging.INFO
+            backend_log.log(level, "Tool Python uid=%s name=%r: %s", tool.uid, tool.name, str(entry.get("message", ""))[:8192])
+        except (ValueError, TypeError, AttributeError):
+            backend_log.warning("Unreadable Python tool log: uid=%s", tool.uid)
+    return "".join(response_lines)
 
 
 def app_data_path() -> Path:
@@ -64,8 +83,14 @@ class Tool:
     @property
     def runtime(self): return self.data.get("runtime") if isinstance(self.data.get("runtime"), dict) else {}
 
+    def supports_manager_feature(self, feature: str) -> bool:
+        """Missing metadata keeps older tools compatible with manager events."""
+        compatibility = self.data.get("compatibility")
+        return not isinstance(compatibility, dict) or compatibility.get(feature, True) is not False
+
 
 class ToolRegistry:
+    CACHE_LIMIT_BYTES = 100 * 1024 * 1024
     def __init__(self):
         self.tools_dir = app_data_path() / "tools"
         self.cache_dir = app_data_path() / ".tool_cache"
@@ -76,6 +101,7 @@ class ToolRegistry:
         self.resources_dir.mkdir(parents=True, exist_ok=True)
         self.installed_tools_dir.mkdir(parents=True, exist_ok=True)
         self._logic_lock = threading.Lock()
+        self._extract_lock = threading.Lock()
         backend_log.info("Backend registry ready: tools=%s cache=%s resources=%s", self.tools_dir, self.cache_dir, self.resources_dir)
 
     def scan(self) -> list[Tool]:
@@ -103,17 +129,53 @@ class ToolRegistry:
         target = self.cache_path(tool)
         stamp = target / ".source"
         source = str(tool.archive.stat().st_mtime_ns)
-        if not target.exists() or not stamp.exists() or stamp.read_text() != source:
-            backend_log.info("Backend extracting tool: name=%r archive=%s", tool.name, tool.archive.name)
-            shutil.rmtree(target, ignore_errors=True); target.mkdir(parents=True)
-            with zipfile.ZipFile(tool.archive) as z: z.extractall(target)
-            stamp.write_text(source)
-        else:
-            backend_log.info("Backend using cached tool extraction: name=%r", tool.name)
+        with self._extract_lock:
+            if not target.exists() or not stamp.exists() or stamp.read_text() != source:
+                backend_log.info("Backend extracting tool: name=%r archive=%s", tool.name, tool.archive.name)
+                shutil.rmtree(target, ignore_errors=True)
+                target.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(tool.archive) as z: z.extractall(target)
+                stamp.write_text(source)
+            else:
+                backend_log.info("Backend using cached tool extraction: name=%r", tool.name)
+        self.enforce_cache_limit(keep=target)
         return target
 
+    def cache_size(self) -> int:
+        total = 0
+        try:
+            for path in self.cache_dir.rglob('*'):
+                if path.is_file(): total += path.stat().st_size
+        except OSError: pass
+        return total
+
+    def enforce_cache_limit(self, limit=None, keep=None) -> int:
+        """Remove the oldest extracted entries until cache fits the 100 MiB limit."""
+        limit = self.CACHE_LIMIT_BYTES if limit is None else max(0, int(limit))
+        folders = []
+        for folder in self.cache_dir.iterdir() if self.cache_dir.is_dir() else ():
+            if not folder.is_dir(): continue
+            try:
+                size = sum(path.stat().st_size for path in folder.rglob('*') if path.is_file())
+                folders.append((folder.stat().st_mtime_ns, folder, size))
+            except OSError: continue
+        total = sum(size for _, _, size in folders); removed = 0
+        keep = Path(keep).resolve() if keep else None
+        for _, folder, size in sorted(folders):
+            try:
+                if total <= limit: break
+                if keep is not None and folder.resolve() == keep: continue
+                shutil.rmtree(folder); total -= size; removed += size
+            except OSError: continue
+        return removed
+
     def cache_path(self, tool: Tool) -> Path:
-        return self.cache_dir / hashlib.sha256(tool.uid.encode("utf-8")).hexdigest()
+        try:
+            state = tool.archive.stat()
+            fingerprint = f"{tool.uid}:{tool.archive.resolve()}:{state.st_size}:{state.st_mtime_ns}"
+        except OSError:
+            fingerprint = f"{tool.uid}:{tool.archive}"
+        return self.cache_dir / hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
 
     def resources_path(self, tool: Tool) -> Path:
         """Return the only persistent write directory allowed for this tool.
@@ -137,7 +199,7 @@ class ToolRegistry:
 
     def run_logic_embedded(self, script: Path, root: Path, env: dict[str, str]) -> str:
         """Execute dynamic tool logic in the bundled interpreter."""
-        output = io.StringIO(); previous_cwd = os.getcwd(); previous_env = os.environ.copy(); previous_argv = sys.argv[:]; dll_dir = None
+        output = io.StringIO(); previous_cwd = os.getcwd(); previous_env = os.environ.copy(); previous_argv = sys.argv[:]; previous_path = sys.path[:]; dll_dir = None
         old_open, old_io_open, old_os_open = builtins.open, io.open, os.open
         resource_root = Path(env["SCS_TOOL_RESOURCES"]).resolve()
         user_profile = Path(os.environ.get("USERPROFILE", str(Path.home())))
@@ -166,13 +228,13 @@ class ToolRegistry:
                 builtins.open, io.open, os.open = safe_open, safe_io_open, safe_os_open
                 os.environ.update(env); os.environ["PATH"] = str(root) + os.pathsep + os.environ.get("PATH", "")
                 if os.name == "nt" and hasattr(os, "add_dll_directory"): dll_dir = os.add_dll_directory(str(root))
-                os.chdir(root); sys.argv = [str(script)]
+                os.chdir(root); sys.argv = [str(script)]; sys.path.insert(0, str(root))
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output): runpy.run_path(str(script), run_name="__main__")
             return output.getvalue()
         finally:
             if dll_dir is not None: dll_dir.close()
             builtins.open, io.open, os.open = old_open, old_io_open, old_os_open
-            os.chdir(previous_cwd); os.environ.clear(); os.environ.update(previous_env); sys.argv = previous_argv
+            os.chdir(previous_cwd); os.environ.clear(); os.environ.update(previous_env); sys.argv = previous_argv; sys.path[:] = previous_path
 
     def cleanup_tool(self, tool: Tool) -> None:
         backend_log.info("Backend cleaning tool cache: name=%r", tool.name)
@@ -218,6 +280,7 @@ class ToolRegistry:
         try: action = json.loads(payload).get("action", "") if payload else ""
         except (TypeError, ValueError, json.JSONDecodeError): action = "invalid-payload"
         backend_log.info("Backend logic start: tool=%r action=%r runtime=%s", tool.name, action, runtime.get("type", ""))
+        backend_log.debug("Backend logic input: uid=%s payload=%s", tool.uid, str(payload)[:8192])
         if not isinstance(logic, str): return self.run_external_logic(tool, root, payload)
         if not (root / logic).is_file():
             backend_log.error("Backend logic file missing: tool=%r file=%s", tool.name, logic)
@@ -239,11 +302,19 @@ class ToolRegistry:
                 runner = self.logic_runner()
                 if not runner: return {"status": "error", "code": "python_runtime_missing", "message": "Python runtime is required for this tool"}
                 output = subprocess.check_output(runner + [str(script)], cwd=root, text=True, timeout=timeout, stderr=subprocess.STDOUT, env=env, **process_options)
-            response = json.loads(output)
+            response = json.loads(split_tool_output(output, tool))
+            if not isinstance(response, dict): raise ValueError("Tool response must be a JSON object")
+            backend_log.debug("Backend logic output: uid=%s response=%s", tool.uid, json.dumps(response, ensure_ascii=False)[:8192])
             backend_log.info("Backend logic completed: tool=%r action=%r status=%r", tool.name, action, response.get("status"))
             return response
-        except PermissionError: return {"status": "security_violation", "message": "ВНИМАНИЕ! ИНСТРУМЕНТ ПЫТАЕТСЯ ВЫЙТИ ЗА ПРЕДЕЛЫ ЗАЩИТЫ. Запуск остановлен.\nWARNING! THE TOOL ATTEMPTED TO BREAK OUTSIDE THE PROTECTION. Launch stopped."}
-        except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError, SystemExit): return {"status": "error", "message": "Не удалось запустить логику инструмента"}
+        except PermissionError:
+            backend_log.exception("Backend logic blocked: tool=%r", tool.name)
+            return {"status": "security_violation", "message": "ВНИМАНИЕ! ИНСТРУМЕНТ ПЫТАЕТСЯ ВЫЙТИ ЗА ПРЕДЕЛЫ ЗАЩИТЫ. Запуск остановлен.\nWARNING! THE TOOL ATTEMPTED TO BREAK OUTSIDE THE PROTECTION. Launch stopped."}
+        except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError, SystemExit) as error:
+            backend_log.exception("Backend logic failed: tool=%r", tool.name)
+            if isinstance(error, subprocess.CalledProcessError) and error.output:
+                backend_log.error("Backend logic child output: tool=%r output=%s", tool.name, str(error.output)[:8192])
+            return {"status": "error", "message": "Не удалось запустить логику инструмента"}
 
     def run_external_logic(self, tool: Tool, root: Path, payload: str = "") -> dict[str, Any]:
         """Run a bundled runtime command (Node, .NET, Java or native EXE)."""
