@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('D:/Games/Euro Truck Simulator 2/Tools/SCS Mega Manager/assets', 'assets'), ('D:/Games/Euro Truck Simulator 2/Tools/SCS Mega Manager/LICENSE', '.')]
 binaries = []
-hiddenimports = ['PyQt5', 'PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebChannel']
+hiddenimports = ['PyQt5', 'PyQt5.QtWebEngineWidgets', 'PyQt5.QtWebChannel', 'base64', 'concurrent', 'concurrent.futures', 'concurrent.futures.thread', 'ctypes', 'datetime', 'hashlib', 'html', 'json', 'mmap', 'os', 'pathlib', 're', 'shutil', 'struct', 'tempfile', 'threading', 'time', 'unicodedata', 'urllib.parse', 'urllib.request', 'winreg', 'zlib']
 datas += collect_data_files('certifi')
 tmp_ret = collect_all('PyQt5.QtWebEngineCore')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -28,13 +28,16 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='SCS_Tools_Manager',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -42,14 +45,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['D:/Games/Euro Truck Simulator 2/Tools/SCS Mega Manager/assets/icon.ico'],
-    contents_directory='redist',
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='SCS_Tools_Manager',
 )

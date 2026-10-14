@@ -10,6 +10,7 @@ PyInstaller packages native binaries only. Run this script on each target OS
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import html
 import importlib
@@ -20,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
@@ -31,7 +33,7 @@ EXE_NAME = "SCS_Tools_Manager.exe"
 SETUP_NAME = "SCS_Tools_Manager_Setup.exe"
 MSI_NAME = "SCS_Tools_Manager.msi"
 PROG_ID = "SCS.Tools.Manager.scstool"
-VERSION = os.environ.get("SCS_TOOLS_VERSION", "1.1.0")
+VERSION = os.environ.get("SCS_TOOLS_VERSION", "1.1.0.1")
 UPGRADE_CODE = "{E8B8E57B-8E9F-4A9B-9238-6B41BCA30E78}"
 NODE_URL = "https://nodejs.org/dist/v24.21.0/node-v24.21.0-x64.msi"
 WIX_URL = "https://github.com/wixtoolset/wix/releases/download/v7.0.0/wix-cli-x64.msi"
@@ -43,6 +45,11 @@ PYTHON_PACKAGES = {
     "PyQt5.QtWebEngineWidgets": "PyQtWebEngine",
     "certifi": "certifi",
 }
+TOOL_RUNTIME_HIDDEN_IMPORTS = (
+    "concurrent",
+    "concurrent.futures",
+    "concurrent.futures.thread",
+)
 
 
 class DependencyInstallationError(RuntimeError):
@@ -252,9 +259,40 @@ def pyinstaller_args(project: Path, mode: str, dist: Path, work: Path, spec: Pat
         "--collect-data=certifi",
         f"--distpath={dist}", f"--workpath={work}", f"--specpath={spec}", "--clean", "--noconfirm",
     ]
+    # Tool Python is loaded dynamically from ZIP packages, so PyInstaller
+    # cannot discover these imports by following main.py.  Include every
+    # standard-library module used by the verified tools present at build time.
+    for module in sorted(set(TOOL_RUNTIME_HIDDEN_IMPORTS) | set(discover_tool_hidden_imports(project))):
+        args.append(f"--hidden-import={module}")
     if icon.is_file(): args.insert(4, f"--icon={icon}")
     if mode == "--onedir": args.insert(3, "--contents-directory=redist")
     return args
+
+
+def discover_tool_hidden_imports(project: Path) -> list[str]:
+    """Return stdlib imports used by Python-backed tool packages."""
+    modules: set[str] = set()
+    tools_dir = project / "tools"
+    for archive_path in sorted(tools_dir.glob("*.zip")):
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                metadata = json.loads(archive.read("info.json").decode("utf-8-sig"))
+                logic = metadata.get("runtime", {}).get("logic")
+                if not isinstance(logic, str) or logic not in archive.namelist():
+                    continue
+                tree = ast.parse(archive.read(logic).decode("utf-8-sig"), filename=f"{archive_path.name}/{logic}")
+        except (OSError, KeyError, UnicodeError, ValueError, zipfile.BadZipFile, SyntaxError) as error:
+            log(f"Skipping Python import discovery for {archive_path.name}: {error}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                candidates = (alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                candidates = (node.module,)
+            else:
+                continue
+            modules.update(name for name in candidates if name.partition(".")[0] in sys.stdlib_module_names)
+    return sorted(modules)
 
 
 def write_inno_script(path: Path, payload: Path, output: Path, icon: Path, license_file: Path) -> None:

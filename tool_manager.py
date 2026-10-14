@@ -199,7 +199,7 @@ class ToolRegistry:
 
     def run_logic_embedded(self, script: Path, root: Path, env: dict[str, str]) -> str:
         """Execute dynamic tool logic in the bundled interpreter."""
-        output = io.StringIO(); previous_cwd = os.getcwd(); previous_env = os.environ.copy(); previous_argv = sys.argv[:]; previous_path = sys.path[:]; dll_dir = None
+        output = io.StringIO(); previous_cwd = os.getcwd(); previous_environ = os.environ; previous_argv = sys.argv[:]; previous_path = sys.path[:]; dll_dir = None
         old_open, old_io_open, old_os_open = builtins.open, io.open, os.open
         resource_root = Path(env["SCS_TOOL_RESOURCES"]).resolve()
         user_profile = Path(os.environ.get("USERPROFILE", str(Path.home())))
@@ -226,7 +226,14 @@ class ToolRegistry:
         try:
             with self._logic_lock:
                 builtins.open, io.open, os.open = safe_open, safe_io_open, safe_os_open
-                os.environ.update(env); os.environ["PATH"] = str(root) + os.pathsep + os.environ.get("PATH", "")
+                # Tool requests can be much larger than Windows' 32,767-character
+                # limit for a real environment variable (for example a complete
+                # mod order).  The embedded script only needs a mapping exposed as
+                # os.environ, so keep its environment in memory instead of writing
+                # the request into the process environment.
+                embedded_env = previous_environ.copy(); embedded_env.update(env)
+                embedded_env["PATH"] = str(root) + os.pathsep + embedded_env.get("PATH", "")
+                os.environ = embedded_env
                 if os.name == "nt" and hasattr(os, "add_dll_directory"): dll_dir = os.add_dll_directory(str(root))
                 os.chdir(root); sys.argv = [str(script)]; sys.path.insert(0, str(root))
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output): runpy.run_path(str(script), run_name="__main__")
@@ -234,7 +241,7 @@ class ToolRegistry:
         finally:
             if dll_dir is not None: dll_dir.close()
             builtins.open, io.open, os.open = old_open, old_io_open, old_os_open
-            os.chdir(previous_cwd); os.environ.clear(); os.environ.update(previous_env); sys.argv = previous_argv; sys.path[:] = previous_path
+            os.chdir(previous_cwd); os.environ = previous_environ; sys.argv = previous_argv; sys.path[:] = previous_path
 
     def cleanup_tool(self, tool: Tool) -> None:
         backend_log.info("Backend cleaning tool cache: name=%r", tool.name)
@@ -310,7 +317,7 @@ class ToolRegistry:
         except PermissionError:
             backend_log.exception("Backend logic blocked: tool=%r", tool.name)
             return {"status": "security_violation", "message": "ВНИМАНИЕ! ИНСТРУМЕНТ ПЫТАЕТСЯ ВЫЙТИ ЗА ПРЕДЕЛЫ ЗАЩИТЫ. Запуск остановлен.\nWARNING! THE TOOL ATTEMPTED TO BREAK OUTSIDE THE PROTECTION. Launch stopped."}
-        except (OSError, ValueError, subprocess.SubprocessError, json.JSONDecodeError, SystemExit) as error:
+        except (Exception, SystemExit) as error:
             backend_log.exception("Backend logic failed: tool=%r", tool.name)
             if isinstance(error, subprocess.CalledProcessError) and error.output:
                 backend_log.error("Backend logic child output: tool=%r output=%s", tool.name, str(error.output)[:8192])

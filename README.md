@@ -8,6 +8,7 @@ It provides one workspace for both ready-made community tools and your own HTML,
 
 - Browse verified tools from the online catalogue.
 - Download, update, remove and launch tool archives.
+- Automatically download and install new manager versions from GitHub Releases.
 - Verify downloaded archives by filename and SHA-256 checksum.
 - Detect accidental duplicate UIDs and prevent unsafe duplicate launches.
 - Run HTML tools with Python or JavaScript actions inside the manager on Windows and Linux.

@@ -1,8 +1,47 @@
 import ctypes
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+
+def apply_portable_update(arguments):
+    """Replace a portable Windows executable after its old process exits."""
+    if len(arguments) != 2 or sys.platform != "win32": return 2
+    destination = Path(arguments[0]).resolve()
+    if destination.name.casefold() != "scs_tools_manager.exe": return 2
+    try: previous_pid = int(arguments[1])
+    except ValueError: return 2
+    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, previous_pid)
+    if handle:
+        try:
+            if ctypes.windll.kernel32.WaitForSingleObject(handle, 120000) == 0x00000102: return 3
+        finally: ctypes.windll.kernel32.CloseHandle(handle)
+    source = Path(sys.executable).resolve(); replacement = destination.with_name(destination.name + ".new")
+    try:
+        shutil.copy2(source, replacement)
+        for attempt in range(40):
+            try: os.replace(replacement, destination); break
+            except PermissionError:
+                if attempt == 39: raise
+                time.sleep(.25)
+        subprocess.Popen([str(destination)], cwd=str(destination.parent), close_fds=True, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        return 0
+    except OSError as error:
+        try: ctypes.windll.user32.MessageBoxW(None, f"Unable to install the portable update:\n{error}", "SCS Tools Manager", 0x10)
+        except Exception: pass
+        return 4
+    finally:
+        try: replacement.unlink(missing_ok=True)
+        except OSError: pass
+
+
+if __name__ == "__main__" and "--apply-portable-update" in sys.argv:
+    index = sys.argv.index("--apply-portable-update")
+    raise SystemExit(apply_portable_update(sys.argv[index + 1:index + 3]))
 
 # QtWebEngine's default GPU cache can remain locked after a previous process.
 # Keep each manager process in its own writable temporary cache directory.

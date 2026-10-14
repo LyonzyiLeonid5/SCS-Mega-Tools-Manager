@@ -42,6 +42,10 @@ else:
     ExeHost = None
 from html_workspace import AuthoringWorkspace, basic_document, format_html
 
+APP_VERSION = "1.1.0.1"
+UPDATE_RELEASE_API = "https://api.github.com/repos/LyonzyiLeonid5/SCS-Mega-Tools-Manager/releases/latest"
+UPDATE_RELEASES_URL = "https://github.com/LyonzyiLeonid5/SCS-Mega-Tools-Manager/releases"
+
 try:
     import certifi
     REMOTE_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -53,6 +57,89 @@ except (ImportError, OSError):
 def open_remote(request, timeout):
     """Open HTTPS resources with a bundled CA set on every supported OS."""
     return urlopen(request, timeout=timeout, context=REMOTE_SSL_CONTEXT)
+
+
+def version_numbers(value):
+    """Return a comparable numeric version tuple."""
+    return tuple(int(item) for item in re.findall(r"\d+", str(value)))
+
+
+def detect_update_channel(executable=None):
+    """Identify which release artifact can update the running distribution."""
+    if sys.platform == "darwin": return "pkg"
+    if sys.platform.startswith("linux"):
+        for command, channel in ((["dpkg-query", "-W", "scs-tools-manager"], "deb"), (["rpm", "-q", "scs-tools-manager"], "rpm")):
+            if not shutil.which(command[0]): continue
+            try:
+                if subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3).returncode == 0: return channel
+            except (OSError, subprocess.SubprocessError): pass
+        return "deb" if shutil.which("dpkg") else "rpm"
+    if sys.platform != "win32": return ""
+    running = Path(executable or sys.executable).resolve()
+    if (running.parent / "unins000.exe").is_file(): return "setup"
+    try:
+        import winreg
+        entries = []
+        roots = (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER)
+        views = (getattr(winreg, "KEY_WOW64_64KEY", 0), getattr(winreg, "KEY_WOW64_32KEY", 0))
+        for root in roots:
+            for view in views:
+                try: uninstall = winreg.OpenKey(root, r"Software\Microsoft\Windows\CurrentVersion\Uninstall", 0, winreg.KEY_READ | view)
+                except OSError: continue
+                with uninstall:
+                    for index in range(winreg.QueryInfoKey(uninstall)[0]):
+                        try:
+                            with winreg.OpenKey(uninstall, winreg.EnumKey(uninstall, index)) as key:
+                                name = str(winreg.QueryValueEx(key, "DisplayName")[0]).strip()
+                                if name != "SCS Tools Manager": continue
+                                values = {}
+                                for field in ("InstallLocation", "UninstallString", "WindowsInstaller"):
+                                    try: values[field] = winreg.QueryValueEx(key, field)[0]
+                                    except OSError: pass
+                                entries.append(values)
+                        except OSError: continue
+        matching = []
+        for entry in entries:
+            location = str(entry.get("InstallLocation", "")).strip().strip('"')
+            try: same_location = bool(location) and Path(location).resolve() == running.parent
+            except OSError: same_location = False
+            if same_location: matching.append(entry)
+        candidates = matching or (entries if running.parent.name.casefold() == "scs tools manager" and "program files" in str(running.parent).casefold() else [])
+        for entry in candidates:
+            uninstall = str(entry.get("UninstallString", "")).casefold()
+            if int(entry.get("WindowsInstaller", 0) or 0) == 1 or "msiexec" in uninstall: return "msi"
+        if candidates: return "setup"
+    except (ImportError, OSError, ValueError): pass
+    return "portable"
+
+
+def select_update_asset(release, channel=None):
+    """Select the native installer produced by build.py for this platform."""
+    assets = [item for item in release.get("assets", []) if isinstance(item, dict)] if isinstance(release, dict) else []
+    channel = channel or detect_update_channel()
+    expected = {"portable": "scs_tools_manager.exe", "setup": "scs_tools_manager_setup.exe", "msi": "scs_tools_manager.msi"}
+    for asset in assets:
+        name = str(asset.get("name", "")).lower(); url = str(asset.get("browser_download_url", ""))
+        matched = name == expected[channel] if channel in expected else name.endswith("." + channel) if channel else False
+        if matched and url.startswith("https://"): return asset
+    return None
+
+
+def application_integrity_issues(registry):
+    """Check source files in development and bundled resources in frozen builds."""
+    issues = []
+    if getattr(sys, "frozen", False):
+        if not Path(sys.executable).is_file(): issues.append(str(sys.executable))
+        for relative in (("assets", "icon.ico"), ("LICENSE",)):
+            path = Path(resource_path(*relative))
+            if not path.is_file(): issues.append(str(path))
+    else:
+        for name in ("main.py", "qt_app.py", "tool_manager.py", "settings_store.py", "installation_manager.py"):
+            if not Path(__file__).with_name(name).is_file(): issues.append(name)
+    for folder in (registry.tools_dir, registry.resources_dir, registry.cache_dir):
+        try: folder.mkdir(parents=True, exist_ok=True)
+        except OSError: issues.append(str(folder))
+    return issues
 
 
 class QLabel(QtLabel):
@@ -464,11 +551,113 @@ class Page(QWidget):
     def update_text(self, lang): pass
 
 
+class ManagerUpdateDialog(QDialog):
+    download_progress = pyqtSignal(int, int)
+    download_finished = pyqtSignal(str, str)
+    def __init__(self, app, release):
+        super().__init__(app)
+        self.app, self.release = app, release
+        self.update_channel = detect_update_channel()
+        self.asset = select_update_asset(release, self.update_channel)
+        self.downloaded_path = None
+        self.setModal(True); self.resize(600, 430)
+        layout = QVBoxLayout(self); layout.setContentsMargins(24, 22, 24, 20); layout.setSpacing(12)
+        self.title = QLabel(); self.title.setObjectName('pageTitle'); layout.addWidget(self.title)
+        self.summary = QLabel(); self.summary.setObjectName('pageSubtitle'); self.summary.setWordWrap(True); layout.addWidget(self.summary)
+        self.notes = QTextBrowser(); self.notes.setObjectName('projectEditor'); self.notes.setOpenExternalLinks(True); layout.addWidget(self.notes, 1)
+        self.status = QLabel(); self.status.setObjectName('pageSubtitle'); self.status.setWordWrap(True); layout.addWidget(self.status)
+        self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.setValue(0); self.progress.hide(); layout.addWidget(self.progress)
+        buttons = QHBoxLayout(); self.release_button = QPushButton(); self.release_button.setObjectName('outlineButton'); self.release_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(str(release.get('html_url') or UPDATE_RELEASES_URL)))); self.cancel_button = QPushButton(); self.cancel_button.setObjectName('outlineButton'); self.cancel_button.clicked.connect(self.reject); self.install_button = QPushButton(); self.install_button.setObjectName('primaryButton'); self.install_button.clicked.connect(self.start_update); buttons.addWidget(self.release_button); buttons.addStretch(); buttons.addWidget(self.cancel_button); buttons.addWidget(self.install_button); layout.addLayout(buttons)
+        self.download_progress.connect(self.show_progress); self.download_finished.connect(self.finish_download)
+        self.update_text()
+    def text(self, ru, en): return ru if self.app.lang['_lang_code'] == 'ru' else en
+    def update_text(self):
+        version = str(self.release.get('version', ''))
+        self.setWindowTitle(self.text('Обновление SCS Tools Manager', 'SCS Tools Manager update'))
+        self.title.setText(self.text('Доступно обновление', 'Update available'))
+        self.summary.setText(self.text(f'Установлена версия {APP_VERSION}. Доступна версия {version}.', f'Version {APP_VERSION} is installed. Version {version} is available.'))
+        notes = str(self.release.get('body') or self.text('Описание обновления не указано.', 'No release notes were provided.'))
+        self.notes.setPlainText(notes)
+        self.release_button.setText(self.text('Страница релиза', 'Release page')); self.cancel_button.setText(self.text('Позже', 'Later')); self.install_button.setText(self.text('Обновить', 'Update'))
+        if not self.asset:
+            self.status.setText(self.text('Для этой системы установщик в релизе не найден.', 'No installer for this system was found in the release.'))
+            self.install_button.setEnabled(False)
+        else:
+            size = int(self.asset.get('size') or 0)
+            self.status.setText(self.text(f'Тип установки: {self.update_channel}. Будет загружен {self.asset.get("name", "установщик")} ({human_size(size)}).', f'Installation type: {self.update_channel}. {self.asset.get("name", "Installer")} will be downloaded ({human_size(size)}).'))
+    def start_update(self):
+        if not self.asset or not str(self.asset.get('browser_download_url', '')).startswith('https://'): return
+        self.install_button.setEnabled(False); self.cancel_button.setEnabled(False); self.progress.show(); self.progress.setRange(0, 0)
+        self.status.setText(self.text('Загрузка обновления…', 'Downloading update…'))
+        def worker():
+            temporary = None
+            try:
+                folder = app_data_path() / 'updates'; folder.mkdir(parents=True, exist_ok=True)
+                name = Path(str(self.asset.get('name') or 'SCS_Tools_Manager_Setup.exe')).name
+                target = folder / name; temporary = target.with_suffix(target.suffix + '.part')
+                request = Request(str(self.asset['browser_download_url']), headers={'User-Agent': f'SCS-Mega-Manager/{APP_VERSION}'})
+                digest = hashlib.sha256(); received = 0
+                with open_remote(request, timeout=30) as source, open(temporary, 'wb') as output:
+                    total = int(source.headers.get('Content-Length') or self.asset.get('size') or 0)
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk: break
+                        output.write(chunk); digest.update(chunk); received += len(chunk); self.download_progress.emit(received, total)
+                expected_size = int(self.asset.get('size') or 0)
+                if expected_size and received != expected_size: raise ValueError('Downloaded installer size does not match the GitHub release asset')
+                expected_digest = str(self.asset.get('digest') or '')
+                if expected_digest.startswith('sha256:') and digest.hexdigest().lower() != expected_digest.split(':', 1)[1].lower(): raise ValueError('Downloaded installer checksum does not match the GitHub release asset')
+                os.replace(temporary, target); temporary = None; self.download_finished.emit(str(target), '')
+            except (OSError, URLError, ValueError) as error:
+                self.download_finished.emit('', str(error))
+            finally:
+                if temporary:
+                    try: temporary.unlink(missing_ok=True)
+                    except OSError: pass
+        threading.Thread(target=worker, daemon=True).start()
+    def show_progress(self, received, total):
+        if total > 0: self.progress.setRange(0, total); self.progress.setValue(received)
+        else: self.progress.setRange(0, 0)
+        self.status.setText(self.text(f'Загружено {human_size(received)} из {human_size(total)}' if total else f'Загружено {human_size(received)}', f'Downloaded {human_size(received)} of {human_size(total)}' if total else f'Downloaded {human_size(received)}'))
+    def finish_download(self, path, error):
+        if error:
+            self.progress.hide(); self.install_button.setEnabled(True); self.cancel_button.setEnabled(True)
+            self.status.setText(self.text('Не удалось загрузить обновление: ', 'Unable to download the update: ') + error); return
+        self.downloaded_path = Path(path); self.progress.setRange(0, 100); self.progress.setValue(100)
+        self.status.setText(self.text('Обновление загружено. Запускаю установку…', 'The update is downloaded. Starting installation…'))
+        QTimer.singleShot(250, self.launch_installer)
+    def launch_installer(self):
+        path = self.downloaded_path
+        try:
+            if not path or not path.is_file(): raise FileNotFoundError(str(path or ''))
+            options = {'cwd': str(path.parent), 'close_fds': True}
+            if sys.platform == 'win32': options['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == 'win32' and self.update_channel == 'portable':
+                subprocess.Popen([str(path), '--apply-portable-update', str(Path(sys.executable).resolve()), str(os.getpid())], **options)
+            elif sys.platform == 'win32' and path.suffix.lower() == '.exe':
+                subprocess.Popen([str(path), '/SILENT', '/SUPPRESSMSGBOXES', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'], **options)
+            elif sys.platform == 'win32' and path.suffix.lower() == '.msi':
+                subprocess.Popen(['msiexec.exe', '/i', str(path), '/passive', '/norestart'], **options)
+            elif sys.platform == 'darwin' and self.update_channel == 'pkg':
+                script = 'on run argv\n do shell script "/usr/sbin/installer -pkg " & quoted form of item 1 of argv & " -target /" with administrator privileges\nend run'
+                subprocess.Popen(['osascript', '-e', script, str(path)], **options)
+            elif sys.platform.startswith('linux') and self.update_channel in ('deb', 'rpm') and shutil.which('pkexec'):
+                command = ['dpkg', '-i', str(path)] if self.update_channel == 'deb' else ['rpm', '-U', str(path)]
+                subprocess.Popen(['pkexec', *command], **options)
+            else:
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))): raise OSError('Unable to open the installer')
+        except OSError as error:
+            self.install_button.setEnabled(True); self.cancel_button.setEnabled(True); self.status.setText(self.text('Не удалось запустить установщик: ', 'Unable to start the installer: ') + str(error)); return
+        application_logger().info('Manager update installer started: %s', path)
+        self.accept(); QTimer.singleShot(100, self.app.close)
+
+
 class HomePage(Page):
     connectivity_ready = pyqtSignal(bool)
-    manager_update_ready = pyqtSignal(str, str)
+    manager_update_ready = pyqtSignal(object)
     def __init__(self, app):
         super().__init__(app, "dashboard")
+        self.latest_release = None; self.prompted_update_versions = set()
         self.title, self.subtitle = self.heading("", "")
         self.scroll = QScrollArea(); self.scroll.setObjectName('homeScroll'); self.scroll.setWidgetResizable(True); self.scroll.setFrameShape(QFrame.NoFrame); self.content = QWidget(); self.content.setObjectName('homeContent'); self.content_layout = QVBoxLayout(self.content); self.content_layout.setContentsMargins(0, 0, 0, 4); self.content_layout.setSpacing(10); self.scroll.setWidget(self.content); self.layout.addWidget(self.scroll, 1)
         hero = self.card(); hero.setObjectName("hero"); hero.setMaximumHeight(155)
@@ -486,7 +675,7 @@ class HomePage(Page):
         continue_card = self.card(); continue_layout = QHBoxLayout(continue_card); continue_layout.setContentsMargins(22, 14, 22, 14)
         continue_text = QVBoxLayout(); self.continue_title = QLabel(); self.continue_title.setObjectName('dashboardSectionTitle'); self.recent_tools = QLabel(); self.recent_tools.setObjectName('pageSubtitle'); self.recent_tools.setWordWrap(True); continue_text.addWidget(self.continue_title); continue_text.addWidget(self.recent_tools); continue_layout.addLayout(continue_text, 1)
         self.online_status = QLabel(); self.online_status.setObjectName('onlineStatus'); continue_layout.addWidget(self.online_status); self.continue_button = QPushButton(); self.continue_button.setObjectName('primaryButton'); self.continue_button.clicked.connect(app.continue_work); continue_layout.addWidget(self.continue_button); self.content_layout.addWidget(continue_card)
-        update_card = self.card(); update_layout = QHBoxLayout(update_card); update_layout.setContentsMargins(22, 12, 22, 12); self.update_status = QLabel(); self.update_status.setObjectName('pageSubtitle'); self.update_status.setWordWrap(True); self.update_button = QPushButton(); self.update_button.setObjectName('outlineButton'); self.update_button.clicked.connect(lambda: self.check_manager_update(force=True)); update_layout.addWidget(self.update_status, 1); update_layout.addWidget(self.update_button); self.content_layout.addWidget(update_card)
+        update_card = self.card(); update_layout = QHBoxLayout(update_card); update_layout.setContentsMargins(22, 12, 22, 12); self.update_status = QLabel(); self.update_status.setObjectName('pageSubtitle'); self.update_status.setWordWrap(True); self.update_button = QPushButton(); self.update_button.setObjectName('outlineButton'); self.update_button.clicked.connect(self.update_action); update_layout.addWidget(self.update_status, 1); update_layout.addWidget(self.update_button); self.content_layout.addWidget(update_card)
         activity_row = QHBoxLayout(); activity_row.setSpacing(10)
         activity_card = self.card(); activity_layout = QVBoxLayout(activity_card); activity_layout.setContentsMargins(22, 14, 22, 14); activity_layout.setSpacing(4); self.activity_title = QLabel(); self.activity_title.setObjectName('dashboardSectionTitle'); self.activity_text = QLabel(); self.activity_text.setObjectName('pageSubtitle'); self.activity_text.setWordWrap(True); activity_layout.addWidget(self.activity_title); activity_layout.addWidget(self.activity_text); activity_row.addWidget(activity_card, 3)
         tool_updates_card = self.card(); tool_updates_layout = QVBoxLayout(tool_updates_card); tool_updates_layout.setContentsMargins(22, 14, 22, 14); tool_updates_layout.setSpacing(4); self.tool_updates_title = QLabel(); self.tool_updates_title.setObjectName('dashboardSectionTitle'); self.tool_updates_text = QLabel(); self.tool_updates_text.setObjectName('pageSubtitle'); self.tool_updates_text.setWordWrap(True); self.tool_updates_button = QPushButton(); self.tool_updates_button.setObjectName('outlineButton'); self.tool_updates_button.clicked.connect(self.open_tool_updates); tool_updates_layout.addWidget(self.tool_updates_title); tool_updates_layout.addWidget(self.tool_updates_text); tool_updates_layout.addWidget(self.tool_updates_button, alignment=Qt.AlignRight); activity_row.addWidget(tool_updates_card, 2); self.content_layout.addLayout(activity_row)
@@ -527,32 +716,42 @@ class HomePage(Page):
     def check_manager_update(self, force=False):
         self.update_status.setText('Проверка обновлений…' if self.app.lang['_lang_code'] == 'ru' else 'Checking for updates…')
         def worker():
-            latest = ''; url = 'https://github.com/LyonzyiLeonid5/SCS-Mega-Tools-Manager/releases'
+            release = {'status': 'empty', 'force': force}
             try:
-                request = Request('https://api.github.com/repos/LyonzyiLeonid5/SCS-Mega-Tools-Manager/releases/latest', headers={'User-Agent': 'SCS-Mega-Manager/1.0'})
+                request = Request(UPDATE_RELEASE_API, headers={'Accept': 'application/vnd.github+json', 'User-Agent': f'SCS-Mega-Manager/{APP_VERSION}'})
                 with open_remote(request, timeout=8) as response: data = json.loads(response.read().decode('utf-8'))
-                latest = str(data.get('tag_name') or data.get('name') or '').lstrip('vV')
-                url = str(data.get('html_url') or url)
-            except (OSError, URLError, ValueError, UnicodeError, json.JSONDecodeError): latest = 'error' if force else ''
-            try: self.manager_update_ready.emit(latest, url)
+                release = {'status': 'ok', 'force': force, 'version': str(data.get('tag_name') or data.get('name') or '').lstrip('vV'), 'html_url': str(data.get('html_url') or UPDATE_RELEASES_URL), 'body': str(data.get('body') or ''), 'assets': data.get('assets') if isinstance(data.get('assets'), list) else []}
+            except (OSError, URLError, ValueError, UnicodeError, json.JSONDecodeError): release = {'status': 'error' if force else 'empty', 'force': force}
+            try: self.manager_update_ready.emit(release)
             except RuntimeError: pass
         threading.Thread(target=worker, daemon=True).start()
-    def set_manager_update(self, latest, url):
+    def update_action(self):
+        if self.latest_release: self.show_update_dialog()
+        else: self.check_manager_update(force=True)
+    def show_update_dialog(self):
+        if not self.latest_release: return
+        ManagerUpdateDialog(self.app, self.latest_release).exec_()
+    def set_manager_update(self, release):
         ru = self.app.lang['_lang_code'] == 'ru'
-        if latest == 'error': self.update_status.setText('Не удалось проверить обновления.' if ru else 'Unable to check for updates.'); return
-        if not latest: self.update_status.setText('Автоматическая проверка обновлений включена.' if ru else 'Automatic update checks are enabled.'); return
-        def numbers(value): return tuple(int(item) for item in re.findall(r'\d+', value))
-        if numbers(latest) > numbers('1.1.0'):
+        status = release.get('status') if isinstance(release, dict) else 'error'
+        if status == 'error': self.latest_release = None; self.update_status.setText('Не удалось проверить обновления.' if ru else 'Unable to check for updates.'); self.update_button.setText('Проверить обновление' if ru else 'Check for updates'); return
+        if status != 'ok': self.latest_release = None; self.update_status.setText('Автоматическая проверка обновлений включена.' if ru else 'Automatic update checks are enabled.'); return
+        latest = str(release.get('version') or '')
+        if version_numbers(latest) > version_numbers(APP_VERSION):
+            self.latest_release = release
             self.update_status.setText((f'Доступна версия {latest}.' if ru else f'Version {latest} is available.'))
-            self.update_button.setProperty('release_url', url); self.update_button.clicked.disconnect(); self.update_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+            self.update_button.setText('Обновить' if ru else 'Update')
             self.app.add_notification(self.update_status.text(), 'info', 'dashboard', key='manager-update-' + latest)
-        else: self.update_status.setText('Установлена последняя версия.' if ru else 'The latest version is installed.')
+            if latest not in self.prompted_update_versions:
+                self.prompted_update_versions.add(latest); QTimer.singleShot(0, self.show_update_dialog)
+        else:
+            self.latest_release = None; self.update_status.setText('Установлена последняя версия.' if ru else 'The latest version is installed.'); self.update_button.setText('Проверить обновление' if ru else 'Check for updates')
     def refresh_overview(self):
         store = getattr(self.app, "pages", {}).get("store")
         verified = len(store.tools) if getattr(store, "verified_loaded", False) else "—"
         downloaded = len(self.app.registry.scan())
         catalog_state = self.app.lang["dashboard_catalog_ready"] if getattr(store, "verified_loaded", False) else self.app.lang["dashboard_catalog_unavailable"]
-        values = (str(verified), str(downloaded), "3", "v1.1.0")
+        values = (str(verified), str(downloaded), "3", "v" + APP_VERSION)
         labels = (self.app.lang["dashboard_verified"], self.app.lang["dashboard_downloaded_count"], self.app.lang["dashboard_runtimes"], self.app.lang["dashboard_version"])
         for (number, label), value, text in zip(self.stats, values, labels): number.setText(value); label.setText(text)
         self.subtitle.setText(f"{self.app.lang['dashboard_subtitle']} · {catalog_state}")
@@ -571,7 +770,7 @@ class HomePage(Page):
         self.title.setText(lang["tab_dashboard"]); self.hero_title.setText(lang["dashboard_title"]); self.hero_text.setText(lang["dashboard_info"])
         self.continue_title.setText('Продолжить работу' if lang['_lang_code'] == 'ru' else 'Continue working')
         self.continue_button.setText('Открыть все' if lang['_lang_code'] == 'ru' else 'Open all')
-        self.update_button.setText('Проверить обновление' if lang['_lang_code'] == 'ru' else 'Check for updates')
+        self.update_button.setText(('Обновить' if lang['_lang_code'] == 'ru' else 'Update') if self.latest_release else ('Проверить обновление' if lang['_lang_code'] == 'ru' else 'Check for updates'))
         self.activity_title.setText('Недавняя активность' if lang['_lang_code'] == 'ru' else 'Recent activity'); self.tool_updates_title.setText('Обновления инструментов' if lang['_lang_code'] == 'ru' else 'Tool updates'); self.tool_updates_button.setText('Открыть магазин' if lang['_lang_code'] == 'ru' else 'Open Store')
         self.about_title.setText(lang["dashboard_about_title"]); self.about_text.setText(lang["dashboard_about_text"]); self.features_title.setText(lang["dashboard_features_title"]); self.features_text.setText(lang["dashboard_features_text"])
         self.socials_title.setText(lang["dashboard_socials_title"]); self.socials_text.setText(lang["dashboard_socials_text"])
@@ -3056,12 +3255,12 @@ class DebugPage(Page):
         installed_count = len(list((tools_dir / "installed").glob("*.scstool")))
         if self.app.lang['_lang_code'] == 'ru':
             state = 'доступен' if state == 'online' else 'недоступен'
-            return (f'SCS Tools Manager 1.1.0\nОС: {platform.platform()}\n'
+            return (f'SCS Tools Manager {APP_VERSION}\nОС: {platform.platform()}\n'
                     f'Python: {sys.version.split()[0]} | Qt: {QT_VERSION_STR} | PyQt: {PYQT_VERSION_STR}\n'
                     f'Инструменты: {tools_dir}\nКаталог: {state} | Версия: {catalog_version}\nСвободно: {free_space:.1f} ГиБ\n'
                     f'Кэш: {cache_size / (1024 * 1024):.1f} МиБ / 100 МиБ\n'
                     f'Установленные файлы запуска: {installed_count}\nЛог: {app_data_path() / "logs" / "application.log"}')
-        return (f'SCS Tools Manager 1.1.0\nOS: {platform.platform()}\n'
+        return (f'SCS Tools Manager {APP_VERSION}\nOS: {platform.platform()}\n'
                 f'Python: {sys.version.split()[0]} | Qt: {QT_VERSION_STR} | PyQt: {PYQT_VERSION_STR}\n'
                 f'Tools: {tools_dir}\nCatalog: {state} | Version: {catalog_version}\nFree space: {free_space:.1f} GiB\n'
                 f'Cache: {cache_size / (1024 * 1024):.1f} MiB / 100 MiB\nInstalled launchers: {installed_count}\n'
@@ -3069,12 +3268,7 @@ class DebugPage(Page):
     def copy_diagnostics(self):
         QApplication.clipboard().setText(self.diagnostics_text() + '\n\n' + self.log_view.toPlainText())
     def check_integrity(self):
-        issues = []
-        for name in ('main.py', 'qt_app.py', 'tool_manager.py', 'settings_store.py', 'installation_manager.py'):
-            if not Path(__file__).with_name(name).is_file(): issues.append(name)
-        for folder in (self.app.registry.tools_dir, self.app.registry.resources_dir, self.app.registry.cache_dir):
-            try: folder.mkdir(parents=True, exist_ok=True)
-            except OSError: issues.append(str(folder))
+        issues = application_integrity_issues(self.app.registry)
         message = ('Проблем не найдено.' if self.app.lang['_lang_code'] == 'ru' else 'No problems found.') if not issues else ('Не найдены или недоступны:\n' if self.app.lang['_lang_code'] == 'ru' else 'Missing or unavailable:\n') + '\n'.join(issues)
         QMessageBox.information(self, 'Проверка целостности' if self.app.lang['_lang_code'] == 'ru' else 'Integrity check', message)
     def create_report(self):
@@ -3200,7 +3394,7 @@ class MainWindow(QMainWindow):
         for key, icon in (("dashboard", "⌂"), ("store", "▣"), ("library", "↓"), ("running", "▤"), ("create", "+"), ("debug", "⌁"), ("settings", "⚙")):
             b = QPushButton(); b.setObjectName("navButton"); b.setCheckable(True); b.clicked.connect(lambda _, k=key: self.show_page(k)); sl.addWidget(b); self.buttons[key] = (b, icon)
             if key == "running": b.hide()
-        sl.addStretch(); version = QLabel("v1.1.0"); version.setObjectName("muted"); sl.addWidget(version); layout.addWidget(side)
+        sl.addStretch(); version = QLabel("v" + APP_VERSION); version.setObjectName("muted"); sl.addWidget(version); layout.addWidget(side)
         self.content = content = QVBoxLayout(); self.header_box = QWidget(); header = QHBoxLayout(self.header_box); header.setContentsMargins(0, 0, 0, 0); self.exit_button = QPushButton(); self.exit_button.setObjectName("outlineButton"); self.exit_button.setFixedHeight(34); self.exit_button.clicked.connect(self.close); self.lang_button = QPushButton("RU / EN"); self.lang_button.setObjectName("outlineButton"); self.lang_button.setFixedHeight(34); self.lang_button.clicked.connect(lambda: self.change_language("en" if self.lang["_lang_code"] == "ru" else "ru")); self.notification_button = QPushButton(); self.notification_button.setObjectName('outlineButton'); self.notification_button.setFixedHeight(34); self.notification_button.clicked.connect(self.show_notifications); header.addStretch(); header.addWidget(self.notification_button); header.addWidget(self.exit_button); header.addWidget(self.lang_button); content.addWidget(self.header_box)
         self.stack = QStackedWidget(); self.pages = {"dashboard": HomePage(self), "store": StorePage(self), "library": LibraryPage(self), "running": RunningPage(self), "create": CreatePage(self), "debug": DebugPage(self), "settings": SettingsPage(self)}
         for p in self.pages.values(): self.stack.addWidget(p)

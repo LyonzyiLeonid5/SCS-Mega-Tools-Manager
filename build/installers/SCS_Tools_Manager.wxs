@@ -27,6 +27,12 @@
           <Component Id="Cmp34c852a372a34690f676" Guid="*">
             <File Id="File34c852a372a34690f676" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\_lzma.pyd" KeyPath="yes" />
           </Component>
+          <Component Id="Cmpdc3153adef5c4386a8b3" Guid="*">
+            <File Id="Filedc3153adef5c4386a8b3" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\_multiprocessing.pyd" KeyPath="yes" />
+          </Component>
+          <Component Id="Cmpa1efb7bff9542636b46f" Guid="*">
+            <File Id="Filea1efb7bff9542636b46f" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\_queue.pyd" KeyPath="yes" />
+          </Component>
           <Component Id="Cmpba6bafaa375db6407289" Guid="*">
             <File Id="Fileba6bafaa375db6407289" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\_socket.pyd" KeyPath="yes" />
           </Component>
@@ -57,6 +63,9 @@
           <Component Id="Cmp92c7326775f3f274ef41" Guid="*">
             <File Id="File92c7326775f3f274ef41" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\LICENSE" KeyPath="yes" />
           </Component>
+          <Component Id="Cmp321678ad0121e43220da" Guid="*">
+            <File Id="File321678ad0121e43220da" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\pyexpat.pyd" KeyPath="yes" />
+          </Component>
           <Component Id="Cmpe209e09a57bc6a5e98c2" Guid="*">
             <File Id="Filee209e09a57bc6a5e98c2" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\python3.dll" KeyPath="yes" />
           </Component>
@@ -78,6 +87,9 @@
           <Directory Id="Dir5a70f3b0e058094f7f66" Name="assets">
             <Component Id="Cmpec705f973e45e90465a5" Guid="*">
               <File Id="Fileec705f973e45e90465a5" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\assets\icon.ico" KeyPath="yes" />
+            </Component>
+            <Component Id="Cmp6a3c8058088a474430e5" Guid="*">
+              <File Id="File6a3c8058088a474430e5" Source="D:\Games\Euro Truck Simulator 2\Tools\SCS Mega Manager\build\release\SCS_Tools_Manager\redist\assets\Screenshot 2026-10-14 174255.jpg" KeyPath="yes" />
             </Component>
           </Directory>
           <Directory Id="Dirb47cd227833ce62d1748" Name="certifi">
@@ -4973,6 +4985,8 @@
       <ComponentRef Id="Cmp3e2047084469f64e1cb5" />
       <ComponentRef Id="Cmpe82ecb1ce0fc993bc1fa" />
       <ComponentRef Id="Cmp34c852a372a34690f676" />
+      <ComponentRef Id="Cmpdc3153adef5c4386a8b3" />
+      <ComponentRef Id="Cmpa1efb7bff9542636b46f" />
       <ComponentRef Id="Cmpba6bafaa375db6407289" />
       <ComponentRef Id="Cmpda9e7924c9ca7a59d439" />
       <ComponentRef Id="Cmp7939de29b0848d226fea" />
@@ -4983,6 +4997,7 @@
       <ComponentRef Id="Cmp599ba1ef25504995b27c" />
       <ComponentRef Id="Cmpd1dfefd918aed90b1edb" />
       <ComponentRef Id="Cmp92c7326775f3f274ef41" />
+      <ComponentRef Id="Cmp321678ad0121e43220da" />
       <ComponentRef Id="Cmpe209e09a57bc6a5e98c2" />
       <ComponentRef Id="Cmp647bc4f902a356cc56b5" />
       <ComponentRef Id="Cmp8f61530db16118037739" />
@@ -4990,6 +5005,7 @@
       <ComponentRef Id="Cmpc4b7fc5a6691f3802f5d" />
       <ComponentRef Id="Cmp1e8d21d5d6c4a203c4ac" />
       <ComponentRef Id="Cmpec705f973e45e90465a5" />
+      <ComponentRef Id="Cmp6a3c8058088a474430e5" />
       <ComponentRef Id="Cmp85c410403d43fdb4d47c" />
       <ComponentRef Id="Cmp92597fca33e1f7f00662" />
       <ComponentRef Id="Cmp0e9c662464a724876662" />
